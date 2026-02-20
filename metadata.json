@@ -1,0 +1,7 @@
+{
+  "name": "TRANSKRIBOIDA",
+  "description": "TRANSKRIBOIDA: A spatial, voice-driven Requirements Engineering environment powered by Gemini Multimodal Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
