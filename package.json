@@ -8,6 +8,7 @@
     "dev:client": "vite",
     "dev:server": "node --experimental-strip-types --watch server/index.ts",
     "test:openai-integration": "node --experimental-strip-types --test server/ai/openAiWriter.integration.test.ts",
+    "test:anthropic-integration": "node --experimental-strip-types --test server/ai/anthropicWriter.integration.test.ts",
     "check:guardrails": "bash ./scripts/check-guardrails.sh",
     "check": "npm run check:guardrails",
     "verify": "npm run check && npm run build",

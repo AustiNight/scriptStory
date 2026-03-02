@@ -54,16 +54,16 @@
   - [x] Add integration tests with fixed transcript fixtures validating quality and deterministic tool-call extraction shape.
   - [x] Acceptance Criteria: User can choose OpenAI writer provider and produce valid work-item outputs equivalent to Gemini baseline quality.
 
-- [ ] Epic: Add Anthropic Provider Adapter
-  - [ ] Implement backend Anthropic adapter for writer operations:
+- [x] Epic: Add Anthropic Provider Adapter
+  - [x] Implement backend Anthropic adapter for writer operations:
     - Transcript summarization.
     - Transcript analysis into tool invocations.
-  - [ ] Define fallback behavior for non-realtime transcription scenarios (keep Gemini transcription path while Anthropic handles writer tasks).
-  - [ ] Implement tool-use parsing/validation and adapter normalization into shared tool-call objects.
-  - [ ] Implement streaming response support for long analysis calls and safe truncation behavior.
-  - [ ] Add provider-specific config fields in settings (model IDs, temperature, max output tokens).
-  - [ ] Add integration tests with same transcript fixtures used for Gemini/OpenAI to compare extraction fidelity.
-  - [ ] Acceptance Criteria: User can choose Anthropic writer provider and complete end-to-end work-item generation without schema regressions.
+  - [x] Define fallback behavior for non-realtime transcription scenarios (keep Gemini transcription path while Anthropic handles writer tasks).
+  - [x] Implement tool-use parsing/validation and adapter normalization into shared tool-call objects.
+  - [x] Implement streaming response support for long analysis calls and safe truncation behavior.
+  - [x] Add provider-specific config fields in settings (model IDs, temperature, max output tokens).
+  - [x] Add integration tests with same transcript fixtures used for Gemini/OpenAI to compare extraction fidelity.
+  - [x] Acceptance Criteria: User can choose Anthropic writer provider and complete end-to-end work-item generation without schema regressions.
 
 - [ ] Epic: Build MCP Gateway + Server Registry (Single-User Local MVP)
   - [ ] Add backend MCP gateway service that is the only component allowed to communicate with MCP servers.

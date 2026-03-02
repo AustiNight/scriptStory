@@ -11,6 +11,7 @@ import {
 import { sendSuccess } from "../http/envelope.ts";
 import { HttpError } from "../http/errors.ts";
 import { GeminiWriter } from "./geminiWriter.ts";
+import { AnthropicWriter } from "./anthropicWriter.ts";
 import { OpenAiWriter } from "./openAiWriter.ts";
 import type { ContextSourceInput, WorkItemInput } from "./types.ts";
 
@@ -57,10 +58,12 @@ const buildWriterRegistry = (
   },
   anthropic: {
     id: "anthropic",
-    adapter: null,
+    adapter: runtimeConfig.providers.anthropicApiKey
+      ? new AnthropicWriter(runtimeConfig.providers.anthropicApiKey)
+      : null,
     enabled: runtimeConfig.featureFlags.ENABLE_ANTHROPIC_WRITER,
     configured: Boolean(runtimeConfig.providers.anthropicApiKey),
-    implemented: false,
+    implemented: true,
     requiredEnv: "ANTHROPIC_API_KEY",
   },
 });

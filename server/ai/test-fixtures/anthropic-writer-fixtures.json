@@ -1,0 +1,108 @@
+{
+  "feature_and_bug_review": {
+    "transcript": "In UAT we already have password reset working. Create a follow-up story to add SMS reset and log a bug because the reset email link expires immediately.",
+    "projectContext": "ID:1 Type:EPIC Title:\"Authentication\"",
+    "contextSources": [
+      {
+        "name": "auth-notes.txt",
+        "type": "FILE",
+        "content": "Current reset flow is email-only. SMS capability is planned but not built.",
+        "mimeType": "text/plain",
+        "enabled": true
+      }
+    ],
+    "streamEvents": [
+      {
+        "type": "message_start",
+        "message": {
+          "id": "msg_fixture"
+        }
+      },
+      {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_1",
+          "name": "createWorkItem"
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"type\":\"STORY\",\"title\":\"Add SMS password reset\",\"description\":\"As a returning user, I want to reset my password by SMS so recovery works without email.\",\"criteria\":[{\"text\":\"Given a verified phone number, when user requests password reset, then system sends a one-time SMS code.\",\"met\":false}],\"tempId\":\"S1\"}"
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 0
+      },
+      {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_2",
+          "name": "createWorkItem",
+          "input": {
+            "type": "BUG",
+            "title": "Reset link expires immediately",
+            "description": "Users cannot finish reset because link is already expired.",
+            "stepsToReproduce": [
+              "Open reset email",
+              "Click reset link"
+            ],
+            "expectedResult": "Link opens valid reset form.",
+            "actualResult": "Link displays expired token error."
+          }
+        }
+      },
+      {
+        "type": "content_block_stop",
+        "index": 1
+      },
+      {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use"
+        }
+      },
+      {
+        "type": "message_stop"
+      }
+    ],
+    "expectedToolCalls": [
+      {
+        "name": "createWorkItem",
+        "args": {
+          "type": "STORY",
+          "title": "Add SMS password reset",
+          "description": "As a returning user, I want to reset my password by SMS so recovery works without email.",
+          "criteria": [
+            {
+              "text": "Given a verified phone number, when user requests password reset, then system sends a one-time SMS code.",
+              "met": false
+            }
+          ],
+          "tempId": "S1"
+        }
+      },
+      {
+        "name": "createWorkItem",
+        "args": {
+          "type": "BUG",
+          "title": "Reset link expires immediately",
+          "description": "Users cannot finish reset because link is already expired.",
+          "stepsToReproduce": [
+            "Open reset email",
+            "Click reset link"
+          ],
+          "expectedResult": "Link opens valid reset form.",
+          "actualResult": "Link displays expired token error."
+        }
+      }
+    ]
+  }
+}

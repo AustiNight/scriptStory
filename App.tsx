@@ -3,7 +3,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { WorkItem, WorkItemType, Priority, Risk, CreateWorkItemArgs, UpdateWorkItemArgs, AppMode, SavedTranscript, ADOConfig, FilterState, FilterArgs, VisualArgs, DeleteArgs, SwitchModeArgs, FIBONACCI_SEQUENCE, SearchMode, PushedItemLog, ContextSource } from './types';
 import { geminiLive, SessionType } from './services/geminiLiveService';
 import { DEFAULT_PROVIDER_SELECTION, sanitizeProviderSelection, type ProviderSelection, type WriterProviderId } from './config/providerContracts';
-import { DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG, sanitizeWriterProviderRuntimeConfig, type OpenAIWriterRuntimeConfig, type WriterProviderRuntimeConfig } from './config/providerRuntimeConfig';
+import { DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG, sanitizeWriterProviderRuntimeConfig, type AnthropicWriterRuntimeConfig, type OpenAIWriterRuntimeConfig, type WriterProviderRuntimeConfig } from './config/providerRuntimeConfig';
 import { pushToADO } from './services/adoService';
 import { parseDocument } from './services/documentUtils';
 import Visualizer from './components/Visualizer';
@@ -448,6 +448,19 @@ export default function App() {
       }));
   };
 
+  const handleAnthropicRuntimeConfigChange = (
+      key: keyof AnthropicWriterRuntimeConfig,
+      value: AnthropicWriterRuntimeConfig[keyof AnthropicWriterRuntimeConfig],
+  ) => {
+      setWriterProviderRuntimeConfig(prev => sanitizeWriterProviderRuntimeConfig({
+          ...prev,
+          anthropic: {
+              ...prev.anthropic,
+              [key]: value,
+          },
+      }));
+  };
+
   const latestRef = useRef({ createWorkItem, updateWorkItem, deleteWorkItem, navigateFocus, handleFilter, handleVisuals, handleSwitchMode, isMeetingRunning, isCommanding, focusedItemId });
   useEffect(() => { latestRef.current = { createWorkItem, updateWorkItem, deleteWorkItem, navigateFocus, handleFilter, handleVisuals, handleSwitchMode, isMeetingRunning, isCommanding, focusedItemId }; }, [createWorkItem, updateWorkItem, deleteWorkItem, navigateFocus, handleFilter, handleVisuals, handleSwitchMode, isMeetingRunning, isCommanding, focusedItemId]);
 
@@ -674,6 +687,62 @@ export default function App() {
                                   </div>
                                   <p className="text-[11px] text-slate-500">
                                       Used only when Writer Provider is set to OpenAI.
+                                  </p>
+                              </div>
+                              <div className="pt-4 border-t border-white/10 space-y-3">
+                                  <div className="text-xs font-mono uppercase tracking-wider text-slate-400">Anthropic Writer Runtime</div>
+                                  <input
+                                      type="text"
+                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                      placeholder="Summary model"
+                                      value={writerProviderRuntimeConfig.anthropic.summaryModel}
+                                      onChange={e => handleAnthropicRuntimeConfigChange('summaryModel', e.target.value)}
+                                  />
+                                  <input
+                                      type="text"
+                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                      placeholder="Analysis model"
+                                      value={writerProviderRuntimeConfig.anthropic.analysisModel}
+                                      onChange={e => handleAnthropicRuntimeConfigChange('analysisModel', e.target.value)}
+                                  />
+                                  <input
+                                      type="text"
+                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                      placeholder="Refine model"
+                                      value={writerProviderRuntimeConfig.anthropic.refineModel}
+                                      onChange={e => handleAnthropicRuntimeConfigChange('refineModel', e.target.value)}
+                                  />
+                                  <input
+                                      type="text"
+                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                      placeholder="Fallback model"
+                                      value={writerProviderRuntimeConfig.anthropic.fallbackModel}
+                                      onChange={e => handleAnthropicRuntimeConfigChange('fallbackModel', e.target.value)}
+                                  />
+                                  <div className="grid grid-cols-2 gap-3">
+                                      <input
+                                          type="number"
+                                          min={0}
+                                          max={2}
+                                          step={0.1}
+                                          className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                          placeholder="Temperature"
+                                          value={writerProviderRuntimeConfig.anthropic.temperature}
+                                          onChange={e => handleAnthropicRuntimeConfigChange('temperature', Number(e.target.value))}
+                                      />
+                                      <input
+                                          type="number"
+                                          min={64}
+                                          max={4096}
+                                          step={1}
+                                          className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                          placeholder="Max output tokens"
+                                          value={writerProviderRuntimeConfig.anthropic.maxOutputTokens}
+                                          onChange={e => handleAnthropicRuntimeConfigChange('maxOutputTokens', Number(e.target.value))}
+                                      />
+                                  </div>
+                                  <p className="text-[11px] text-slate-500">
+                                      Used only when Writer Provider is set to Anthropic.
                                   </p>
                               </div>
                           </div>

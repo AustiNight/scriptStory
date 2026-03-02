@@ -32,6 +32,12 @@ interface OpenAiFunctionTool {
   parameters: JsonSchema;
 }
 
+export interface AnthropicTool {
+  name: NormalizedToolCallName;
+  description: string;
+  input_schema: JsonSchema;
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -473,3 +479,11 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
     },
   },
 ];
+
+export const ANTHROPIC_ANALYST_TOOLS: AnthropicTool[] = OPENAI_ANALYST_TOOLS.map(
+  ({ name, description, parameters }) => ({
+    name,
+    description,
+    input_schema: parameters,
+  }),
+);
