@@ -47,6 +47,7 @@ export interface WorkItem {
   // Integration fields
   adoId?: number; // The ID assigned by Azure DevOps
   syncedToADO?: boolean;
+  contextTrace?: WorkItemContextTrace;
 }
 
 export enum AppMode {
@@ -83,6 +84,86 @@ export interface ContextSource {
   mimeType?: string; // e.g. 'image/png', 'application/json', 'text/plain'
   enabled: boolean;
   description?: string; 
+}
+
+export interface ContextCitation {
+  id: string;
+  sourceId: string;
+  serverId: string;
+  serverName: string;
+  resource?: string;
+  queryHash: string;
+  score: number;
+  estimatedTokens: number;
+  truncated: boolean;
+  excerpt: string;
+}
+
+export interface ContextRetrievalServerTrace {
+  serverId: string;
+  serverName: string;
+  reachable: boolean;
+  fromCache: boolean;
+  latencyMs: number;
+  snippetCount: number;
+  errorCode?: string;
+}
+
+export interface ContextRetrievalPolicyTrace {
+  mode: 'auto-smart' | 'manual-enrich';
+  globalTokenBudget: number;
+  perServerTokenBudget: number;
+  maxSnippetCount: number;
+  maxSnippetChars: number;
+  cacheTtlMs: number;
+}
+
+export interface ContextRetrievalTrace {
+  policy: ContextRetrievalPolicyTrace;
+  stage1: {
+    needsExternalContext: boolean;
+    reason: string;
+    query: string;
+    queryHash: string;
+    keywordCount: number;
+  };
+  budgets: {
+    globalTokenBudget: number;
+    perServerTokenBudget: number;
+    maxSnippetCount: number;
+    maxSnippetChars: number;
+    usedGlobalTokens: number;
+    usedSnippetCount: number;
+    perServerUsageTokens: Record<string, number>;
+  };
+  cache: {
+    hits: number;
+    misses: number;
+    size: number;
+  };
+  servers: ContextRetrievalServerTrace[];
+  escalation?: {
+    attempted: boolean;
+    used: boolean;
+    baseConfidence: number;
+    finalConfidence: number;
+  };
+}
+
+export interface AnalysisConfidence {
+  score: number;
+  threshold: number;
+  isLowConfidence: boolean;
+  reasons: string[];
+}
+
+export interface WorkItemContextTrace {
+  callName: string;
+  provider: string;
+  recordedAt: number;
+  citations: ContextCitation[];
+  retrieval: ContextRetrievalTrace;
+  confidence: AnalysisConfidence;
 }
 
 export type SearchMode = 'TEXT' | 'WILDCARD' | 'REGEX';

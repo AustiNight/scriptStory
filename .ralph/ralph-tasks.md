@@ -90,23 +90,23 @@
   - [x] Add citation objects in tool-call metadata so each generated work-item can show which MCP source snippets influenced output.
   - [x] Acceptance Criteria: Default flow minimizes token usage via bounded retrieval, while manual enrichment can increase fidelity on demand; citations are available for generated items.
 
-- [ ] Epic: Add UI For Provider + MCP Configuration + Context Controls
-  - [ ] Extend Settings modal in `App.tsx` with new tabs:
+- [x] Epic: Add UI For Provider + MCP Configuration + Context Controls
+  - [x] Extend Settings modal in `App.tsx` with new tabs:
     - `AI Providers`.
     - `MCP Servers`.
     - `Context Policy`.
-  - [ ] Add provider selector for writer/transcription roles with model-level config fields.
-  - [ ] Add MCP server management UI:
+  - [x] Add provider selector for writer/transcription roles with model-level config fields.
+  - [x] Add MCP server management UI:
     - Create/edit/delete server entries.
     - Enable/disable toggles.
     - Priority ordering.
     - Connection test action with status output.
-  - [ ] Add context policy UI controls:
+  - [x] Add context policy UI controls:
     - Auto-Smart (default).
     - Manual Enrich action.
     - Token budget sliders/inputs.
-  - [ ] Add generated-item context trace view (source citations and retrieval stats) in work-item card details or side panel.
-  - [ ] Acceptance Criteria: User can fully configure providers and MCP context behavior from UI without code edits or direct file edits.
+  - [x] Add generated-item context trace view (source citations and retrieval stats) in work-item card details or side panel.
+  - [x] Acceptance Criteria: User can fully configure providers and MCP context behavior from UI without code edits or direct file edits.
 
 - [ ] Epic: Quality, Regression, and Cost Validation
   - [ ] Build transcript fixture suite covering bug reports, stories/features, mixed meeting chatter, and ambiguous requirements.

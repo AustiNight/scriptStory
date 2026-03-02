@@ -1,8 +1,8 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { WorkItem, WorkItemType, Priority, Risk, CreateWorkItemArgs, UpdateWorkItemArgs, AppMode, SavedTranscript, ADOConfig, FilterState, FilterArgs, VisualArgs, DeleteArgs, SwitchModeArgs, FIBONACCI_SEQUENCE, SearchMode, PushedItemLog, ContextSource } from './types';
-import { geminiLive, SessionType } from './services/geminiLiveService';
-import { DEFAULT_PROVIDER_SELECTION, sanitizeProviderSelection, type ProviderSelection, type WriterProviderId } from './config/providerContracts';
+import { WorkItem, WorkItemType, Priority, Risk, CreateWorkItemArgs, UpdateWorkItemArgs, AppMode, SavedTranscript, ADOConfig, FilterState, FilterArgs, VisualArgs, DeleteArgs, SwitchModeArgs, FIBONACCI_SEQUENCE, SearchMode, PushedItemLog, ContextSource, WorkItemContextTrace } from './types';
+import { geminiLive, SessionType, DEFAULT_CONTEXT_POLICY_CONFIG, sanitizeContextPolicyConfig, type AiProviderCatalog, type ContextPolicyConfig } from './services/geminiLiveService';
+import { DEFAULT_PROVIDER_SELECTION, sanitizeProviderSelection, type ProviderSelection, type TranscriptionProviderId, type WriterProviderId } from './config/providerContracts';
 import { DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG, sanitizeWriterProviderRuntimeConfig, type AnthropicWriterRuntimeConfig, type OpenAIWriterRuntimeConfig, type WriterProviderRuntimeConfig } from './config/providerRuntimeConfig';
 import { pushToADO } from './services/adoService';
 import { parseDocument } from './services/documentUtils';
@@ -51,6 +51,134 @@ const INITIAL_ITEMS: WorkItem[] = [
     parentId: '1'
   }
 ];
+
+type SettingsTab = 'ADO' | 'KNOWLEDGE' | 'AI_PROVIDERS' | 'MCP_SERVERS' | 'CONTEXT_POLICY';
+type McpTransport = 'http' | 'command';
+type McpAuthType = 'none' | 'bearer' | 'basic' | 'header';
+
+interface ApiSuccessEnvelope<T> {
+  ok: true;
+  data: T;
+}
+
+interface ApiErrorEnvelope {
+  ok: false;
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
+type ApiEnvelope<T> = ApiSuccessEnvelope<T> | ApiErrorEnvelope;
+
+interface McpServerHealthState {
+  state: 'closed' | 'open' | 'half-open';
+  consecutiveFailures: number;
+  totalRequests: number;
+  totalSuccesses: number;
+  totalFailures: number;
+  lastFailureAt?: string;
+  lastFailureReason?: string;
+  lastSuccessAt?: string;
+  lastLatencyMs?: number;
+  retryAfterMs: number;
+}
+
+interface McpServerAuthView {
+  type: McpAuthType;
+  envVar?: string;
+  username?: string;
+  passwordEnvVar?: string;
+  headerName?: string;
+  valueEnvVar?: string;
+  hasSecret?: boolean;
+}
+
+interface McpServerView {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  endpointOrCommand: string;
+  auth: McpServerAuthView;
+  enabled: boolean;
+  priority: number;
+  timeouts: {
+    requestMs: number;
+    cooldownMs: number;
+    failureThreshold: number;
+  };
+  maxPayload: number;
+  allowedResources: string[];
+  createdAt: string;
+  updatedAt: string;
+  health: McpServerHealthState;
+}
+
+interface McpServerFormState {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  endpointOrCommand: string;
+  enabled: boolean;
+  priority: number;
+  requestMs: number;
+  cooldownMs: number;
+  failureThreshold: number;
+  maxPayload: number;
+  allowedResourcesText: string;
+  authType: McpAuthType;
+  bearerToken: string;
+  bearerEnvVar: string;
+  basicUsername: string;
+  basicPassword: string;
+  basicPasswordEnvVar: string;
+  headerName: string;
+  headerValue: string;
+  headerValueEnvVar: string;
+  preserveExistingSecret: boolean;
+}
+
+interface McpServerTestResult {
+  serverId: string;
+  serverName: string;
+  transport: McpTransport;
+  reachable: boolean;
+  latencyMs: number;
+  statusCode?: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+const createDefaultMcpServerForm = (): McpServerFormState => ({
+  id: '',
+  name: '',
+  transport: 'http',
+  endpointOrCommand: '',
+  enabled: true,
+  priority: 100,
+  requestMs: 12000,
+  cooldownMs: 30000,
+  failureThreshold: 3,
+  maxPayload: 16000,
+  allowedResourcesText: '',
+  authType: 'none',
+  bearerToken: '',
+  bearerEnvVar: '',
+  basicUsername: '',
+  basicPassword: '',
+  basicPasswordEnvVar: '',
+  headerName: '',
+  headerValue: '',
+  headerValueEnvVar: '',
+  preserveExistingSecret: false,
+});
+
+const toApiErrorMessage = <T,>(envelope: ApiEnvelope<T>, status: number): string => {
+  if (!envelope.ok && envelope.error?.message) {
+    return envelope.error.message;
+  }
+  return `Request failed (${status})`;
+};
 
 export default function App() {
   // -- State --
@@ -113,7 +241,7 @@ export default function App() {
       } catch { return []; }
   });
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'ADO' | 'KNOWLEDGE'>('ADO');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('AI_PROVIDERS');
   const [providerSelection, setProviderSelection] = useState<ProviderSelection>(() => {
       try {
           const saved = localStorage.getItem('semantic_lens_provider_selection');
@@ -132,6 +260,27 @@ export default function App() {
           return { ...DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG };
       }
   });
+  const [contextPolicyConfig, setContextPolicyConfig] = useState<ContextPolicyConfig>(() => {
+      try {
+          const saved = localStorage.getItem('semantic_lens_context_policy');
+          if (!saved) return { ...DEFAULT_CONTEXT_POLICY_CONFIG };
+          return sanitizeContextPolicyConfig(JSON.parse(saved));
+      } catch {
+          return { ...DEFAULT_CONTEXT_POLICY_CONFIG };
+      }
+  });
+  const [manualEnrichPending, setManualEnrichPending] = useState(false);
+  const [providerCatalog, setProviderCatalog] = useState<AiProviderCatalog | null>(null);
+  const [providerCatalogError, setProviderCatalogError] = useState<string | null>(null);
+  const [isProviderCatalogLoading, setIsProviderCatalogLoading] = useState(false);
+  const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
+  const [isMcpLoading, setIsMcpLoading] = useState(false);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpEditor, setMcpEditor] = useState<McpServerFormState>(() => createDefaultMcpServerForm());
+  const [editingMcpServerId, setEditingMcpServerId] = useState<string | null>(null);
+  const [isSavingMcpServer, setIsSavingMcpServer] = useState(false);
+  const [mcpTestResults, setMcpTestResults] = useState<Record<string, McpServerTestResult>>({});
+  const [mcpTestingById, setMcpTestingById] = useState<Record<string, boolean>>({});
   const [newSourceText, setNewSourceText] = useState('');
   const [newSourceTitle, setNewSourceTitle] = useState('');
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -146,6 +295,9 @@ export default function App() {
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef(items);
   const contextSourcesRef = useRef(contextSources);
+  const providerSelectionRef = useRef(providerSelection);
+  const contextPolicyRef = useRef(contextPolicyConfig);
+  const manualEnrichPendingRef = useRef(manualEnrichPending);
   
   // Persistence Effects
   useEffect(() => {
@@ -177,11 +329,20 @@ export default function App() {
   useEffect(() => {
       localStorage.setItem('semantic_lens_provider_selection', JSON.stringify(providerSelection));
       geminiLive.setProviderSelection(providerSelection);
+      providerSelectionRef.current = providerSelection;
   }, [providerSelection]);
   useEffect(() => {
       localStorage.setItem('semantic_lens_writer_provider_runtime_config', JSON.stringify(writerProviderRuntimeConfig));
       geminiLive.setWriterProviderRuntimeConfig(writerProviderRuntimeConfig);
   }, [writerProviderRuntimeConfig]);
+  useEffect(() => {
+      localStorage.setItem('semantic_lens_context_policy', JSON.stringify(contextPolicyConfig));
+      geminiLive.setContextPolicyConfig(contextPolicyConfig);
+      contextPolicyRef.current = contextPolicyConfig;
+  }, [contextPolicyConfig]);
+  useEffect(() => {
+      manualEnrichPendingRef.current = manualEnrichPending;
+  }, [manualEnrichPending]);
 
   // -- Helper: Search Logic --
   const checkMatch = useCallback((text: string | undefined, query: string, mode: SearchMode): boolean => {
@@ -236,8 +397,38 @@ export default function App() {
   const handleManualUpdate = useCallback((id: string, updates: Partial<WorkItem>) => {
       setItems(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
   }, []);
+
+  const buildContextTrace = useCallback(
+      (
+          callName: string,
+          provider: WriterProviderId,
+          metadata: unknown,
+      ): WorkItemContextTrace | undefined => {
+          if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+              return undefined;
+          }
+
+          const candidate = metadata as Record<string, unknown>;
+          const citations = Array.isArray(candidate.citations) ? candidate.citations : [];
+          const retrieval = candidate.retrieval;
+          const confidence = candidate.confidence;
+          if (!retrieval || typeof retrieval !== 'object' || !confidence || typeof confidence !== 'object') {
+              return undefined;
+          }
+
+          return {
+              callName,
+              provider,
+              recordedAt: Date.now(),
+              citations: citations as WorkItemContextTrace['citations'],
+              retrieval: retrieval as WorkItemContextTrace['retrieval'],
+              confidence: confidence as WorkItemContextTrace['confidence'],
+          };
+      },
+      [],
+  );
   
-  const createWorkItem = useCallback(async (args: CreateWorkItemArgs) => {
+  const createWorkItem = useCallback(async (args: CreateWorkItemArgs, contextTrace?: WorkItemContextTrace) => {
     const tempIdMap: Map<string, string> = (window as any)._batchIdMap || new Map();
     if (!(window as any)._batchIdMap) (window as any)._batchIdMap = tempIdMap;
 
@@ -262,7 +453,8 @@ export default function App() {
       relatedIds: resolvedRelatedIds.length > 0 ? resolvedRelatedIds : undefined,
       stepsToReproduce: args.stepsToReproduce,
       expectedResult: args.expectedResult,
-      actualResult: args.actualResult
+      actualResult: args.actualResult,
+      contextTrace,
     };
     
     setItems(prev => [...prev, newItem]);
@@ -270,7 +462,7 @@ export default function App() {
     return `Created ${newItem.type} titled "${newItem.title}"`;
   }, [mode]);
 
-  const updateWorkItem = useCallback(async (args: UpdateWorkItemArgs) => {
+  const updateWorkItem = useCallback(async (args: UpdateWorkItemArgs, contextTrace?: WorkItemContextTrace) => {
     let updatedTitle = '';
     setItems(prev => prev.map(item => {
       if (item.id === args.id || (focusedItemId === item.id && !args.id)) {
@@ -290,6 +482,7 @@ export default function App() {
              const existingRelated = updatedItem.relatedIds || [];
              if (!existingRelated.includes(args.addRelatedId)) updatedItem.relatedIds = [...existingRelated, args.addRelatedId];
         }
+        if (contextTrace) updatedItem.contextTrace = contextTrace;
         return updatedItem;
       }
       return item;
@@ -321,6 +514,261 @@ export default function App() {
 
   const handleVisuals = useCallback(async (args: VisualArgs) => { setBlurEnabled(args.enableBlur); return `Blur ${args.enableBlur}.`; }, []);
   const handleSwitchMode = useCallback(async (args: SwitchModeArgs) => { setMode(args.mode.toUpperCase() === 'MEETING' ? AppMode.MEETING : AppMode.GROOMING); return `Switched.`; }, []);
+
+  const requestApi = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
+      const response = await fetch(path, init);
+      const envelope = await response.json() as ApiEnvelope<T>;
+      if (!response.ok || !envelope.ok) {
+          throw new Error(toApiErrorMessage(envelope, response.status));
+      }
+      return envelope.data;
+  }, []);
+
+  const refreshProviderCatalog = useCallback(async () => {
+      setIsProviderCatalogLoading(true);
+      setProviderCatalogError(null);
+      try {
+          const data = await geminiLive.fetchProviderCatalog();
+          setProviderCatalog(data);
+      } catch (e: any) {
+          setProviderCatalogError(e.message || 'Failed to load AI provider status.');
+      } finally {
+          setIsProviderCatalogLoading(false);
+      }
+  }, []);
+
+  const refreshMcpServers = useCallback(async () => {
+      setIsMcpLoading(true);
+      setMcpError(null);
+      try {
+          const data = await requestApi<{ schemaVersion: number; servers: McpServerView[] }>('/api/mcp/servers');
+          const sorted = [...data.servers].sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+          setMcpServers(sorted);
+      } catch (e: any) {
+          setMcpError(e.message || 'Failed to load MCP servers.');
+      } finally {
+          setIsMcpLoading(false);
+      }
+  }, [requestApi]);
+
+  const resetMcpEditor = () => {
+      setEditingMcpServerId(null);
+      setMcpEditor(createDefaultMcpServerForm());
+  };
+
+  const loadMcpServerIntoEditor = (server: McpServerView) => {
+      setEditingMcpServerId(server.id);
+      setMcpEditor({
+          id: server.id,
+          name: server.name,
+          transport: server.transport,
+          endpointOrCommand: server.endpointOrCommand,
+          enabled: server.enabled,
+          priority: server.priority,
+          requestMs: server.timeouts.requestMs,
+          cooldownMs: server.timeouts.cooldownMs,
+          failureThreshold: server.timeouts.failureThreshold,
+          maxPayload: server.maxPayload,
+          allowedResourcesText: (server.allowedResources || []).join('\n'),
+          authType: (server.auth?.type || 'none') as McpAuthType,
+          bearerToken: '',
+          bearerEnvVar: server.auth?.type === 'bearer' ? (server.auth.envVar || '') : '',
+          basicUsername: server.auth?.type === 'basic' ? (server.auth.username || '') : '',
+          basicPassword: '',
+          basicPasswordEnvVar: server.auth?.type === 'basic' ? (server.auth.passwordEnvVar || '') : '',
+          headerName: server.auth?.type === 'header' ? (server.auth.headerName || '') : '',
+          headerValue: '',
+          headerValueEnvVar: server.auth?.type === 'header' ? (server.auth.valueEnvVar || '') : '',
+          preserveExistingSecret: Boolean(server.auth?.hasSecret),
+      });
+  };
+
+  const buildMcpAuthPayload = (form: McpServerFormState) => {
+      if (form.authType === 'none') {
+          return { type: 'none' as const };
+      }
+
+      if (form.authType === 'bearer') {
+          const token = form.bearerToken.trim();
+          const envVar = form.bearerEnvVar.trim();
+          return {
+              type: 'bearer' as const,
+              ...(token ? { token } : {}),
+              ...(envVar ? { envVar } : {}),
+              ...(!token && !envVar && form.preserveExistingSecret ? { hasSecret: true } : {}),
+          };
+      }
+
+      if (form.authType === 'basic') {
+          const password = form.basicPassword.trim();
+          const passwordEnvVar = form.basicPasswordEnvVar.trim();
+          return {
+              type: 'basic' as const,
+              username: form.basicUsername.trim(),
+              ...(password ? { password } : {}),
+              ...(passwordEnvVar ? { passwordEnvVar } : {}),
+              ...(!password && !passwordEnvVar && form.preserveExistingSecret ? { hasSecret: true } : {}),
+          };
+      }
+
+      const headerValue = form.headerValue.trim();
+      const valueEnvVar = form.headerValueEnvVar.trim();
+      return {
+          type: 'header' as const,
+          headerName: form.headerName.trim(),
+          ...(headerValue ? { headerValue } : {}),
+          ...(valueEnvVar ? { valueEnvVar } : {}),
+          ...(!headerValue && !valueEnvVar && form.preserveExistingSecret ? { hasSecret: true } : {}),
+      };
+  };
+
+  const saveMcpServer = async () => {
+      setIsSavingMcpServer(true);
+      setMcpError(null);
+      try {
+          const payload = {
+              ...(editingMcpServerId ? {} : { id: mcpEditor.id.trim() || undefined }),
+              name: mcpEditor.name.trim(),
+              transport: mcpEditor.transport,
+              endpointOrCommand: mcpEditor.endpointOrCommand.trim(),
+              auth: buildMcpAuthPayload(mcpEditor),
+              enabled: mcpEditor.enabled,
+              priority: mcpEditor.priority,
+              timeouts: {
+                  requestMs: mcpEditor.requestMs,
+                  cooldownMs: mcpEditor.cooldownMs,
+                  failureThreshold: mcpEditor.failureThreshold,
+              },
+              maxPayload: mcpEditor.maxPayload,
+              allowedResources: mcpEditor.allowedResourcesText
+                  .split('\n')
+                  .map(line => line.trim())
+                  .filter(Boolean),
+          };
+
+          if (editingMcpServerId) {
+              await requestApi<{ server: McpServerView }>(
+                  `/api/mcp/servers/${encodeURIComponent(editingMcpServerId)}`,
+                  {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(payload),
+                  },
+              );
+          } else {
+              await requestApi<{ server: McpServerView }>('/api/mcp/servers', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload),
+              });
+          }
+
+          resetMcpEditor();
+          await refreshMcpServers();
+      } catch (e: any) {
+          setMcpError(e.message || 'Failed to save MCP server.');
+      } finally {
+          setIsSavingMcpServer(false);
+      }
+  };
+
+  const deleteMcpServer = async (serverId: string) => {
+      if (!window.confirm(`Delete MCP server "${serverId}"?`)) return;
+      setMcpError(null);
+      try {
+          await requestApi<{ deleted: boolean; id: string }>(`/api/mcp/servers/${encodeURIComponent(serverId)}`, {
+              method: 'DELETE',
+          });
+          if (editingMcpServerId === serverId) resetMcpEditor();
+          await refreshMcpServers();
+      } catch (e: any) {
+          setMcpError(e.message || 'Failed to delete MCP server.');
+      }
+  };
+
+  const toggleMcpServerEnabled = async (serverId: string, enabled: boolean) => {
+      setMcpError(null);
+      try {
+          await requestApi<{ server: McpServerView }>(`/api/mcp/servers/${encodeURIComponent(serverId)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled }),
+          });
+          await refreshMcpServers();
+      } catch (e: any) {
+          setMcpError(e.message || 'Failed to update enabled state.');
+      }
+  };
+
+  const testMcpServerConnection = async (serverId: string) => {
+      setMcpTestingById(prev => ({ ...prev, [serverId]: true }));
+      try {
+          const data = await requestApi<{ result: McpServerTestResult }>(
+              `/api/mcp/servers/${encodeURIComponent(serverId)}/test`,
+              {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({}),
+              },
+          );
+          setMcpTestResults(prev => ({ ...prev, [serverId]: data.result }));
+          await refreshMcpServers();
+      } catch (e: any) {
+          setMcpTestResults(prev => ({
+              ...prev,
+              [serverId]: {
+                  serverId,
+                  serverName: serverId,
+                  transport: 'http',
+                  reachable: false,
+                  latencyMs: 0,
+                  errorCode: 'MCP_TEST_FAILED',
+                  errorMessage: e.message || 'Connection test failed.',
+              },
+          }));
+      } finally {
+          setMcpTestingById(prev => ({ ...prev, [serverId]: false }));
+      }
+  };
+
+  const moveMcpServerPriority = async (serverId: string, direction: -1 | 1) => {
+      const sorted = [...mcpServers].sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+      const index = sorted.findIndex(entry => entry.id === serverId);
+      const targetIndex = index + direction;
+      if (index < 0 || targetIndex < 0 || targetIndex >= sorted.length) return;
+
+      const current = sorted[index];
+      const adjacent = sorted[targetIndex];
+      try {
+          await Promise.all([
+              requestApi<{ server: McpServerView }>(`/api/mcp/servers/${encodeURIComponent(current.id)}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ priority: adjacent.priority }),
+              }),
+              requestApi<{ server: McpServerView }>(`/api/mcp/servers/${encodeURIComponent(adjacent.id)}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ priority: current.priority }),
+              }),
+          ]);
+          await refreshMcpServers();
+      } catch (e: any) {
+          setMcpError(e.message || 'Failed to update MCP priority.');
+      }
+  };
+
+  useEffect(() => {
+      if (showSettings && settingsTab === 'AI_PROVIDERS') {
+          refreshProviderCatalog();
+      }
+  }, [showSettings, settingsTab, refreshProviderCatalog]);
+
+  useEffect(() => {
+      if (showSettings && settingsTab === 'MCP_SERVERS') {
+          refreshMcpServers();
+      }
+  }, [showSettings, settingsTab, refreshMcpServers]);
 
   const toggleSelection = (id: string) => {
     const newSet = new Set(selectedItemIds);
@@ -366,18 +814,30 @@ export default function App() {
       transcriptBufferRef.current = ""; 
       setIsAnalyzingMeeting(true);
       (window as any)._batchIdMap = new Map();
+      const basePolicy = contextPolicyRef.current;
+      const manualOverride = manualEnrichPendingRef.current;
       try {
           const projectContext = itemsRef.current.map(i => `ID:${i.id} Type:${i.type} Title:"${i.title}"`).join('\n');
           const activeSources = contextSourcesRef.current.filter(src => src.enabled);
+          const effectivePolicy = manualOverride
+              ? { ...basePolicy, mode: 'manual-enrich' as const }
+              : basePolicy;
+          geminiLive.setContextPolicyConfig(effectivePolicy);
           const toolCalls = await geminiLive.analyzeMeetingTranscript(segment, projectContext, activeSources);
           if (toolCalls && toolCalls.length > 0) {
+              const provider = providerSelectionRef.current.writer;
               for (const call of toolCalls) {
                  const tools = latestRef.current;
-                 if (call.name === 'createWorkItem') await tools.createWorkItem(call.args as CreateWorkItemArgs);
-                 else if (call.name === 'updateWorkItem') await tools.updateWorkItem(call.args as UpdateWorkItemArgs);
+                 const contextTrace = buildContextTrace(call.name, provider, call.metadata);
+                 if (call.name === 'createWorkItem') await tools.createWorkItem(call.args as CreateWorkItemArgs, contextTrace);
+                 else if (call.name === 'updateWorkItem') await tools.updateWorkItem(call.args as UpdateWorkItemArgs, contextTrace);
               }
           }
       } catch (e) { console.error(e); } finally { setIsAnalyzingMeeting(false); }
+      if (manualOverride) {
+          setManualEnrichPending(false);
+          geminiLive.setContextPolicyConfig(basePolicy);
+      }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -435,6 +895,10 @@ export default function App() {
       setProviderSelection(prev => sanitizeProviderSelection({ ...prev, writer }));
   };
 
+  const handleTranscriptionProviderChange = (transcription: TranscriptionProviderId) => {
+      setProviderSelection(prev => sanitizeProviderSelection({ ...prev, transcription }));
+  };
+
   const handleOpenAiRuntimeConfigChange = (
       key: keyof OpenAIWriterRuntimeConfig,
       value: OpenAIWriterRuntimeConfig[keyof OpenAIWriterRuntimeConfig],
@@ -459,6 +923,20 @@ export default function App() {
               [key]: value,
           },
       }));
+  };
+
+  const handleContextPolicyConfigChange = (
+      key: keyof ContextPolicyConfig,
+      value: ContextPolicyConfig[keyof ContextPolicyConfig],
+  ) => {
+      setContextPolicyConfig(prev => sanitizeContextPolicyConfig({
+          ...prev,
+          [key]: value,
+      }));
+  };
+
+  const triggerManualEnrich = () => {
+      setManualEnrichPending(true);
   };
 
   const latestRef = useRef({ createWorkItem, updateWorkItem, deleteWorkItem, navigateFocus, handleFilter, handleVisuals, handleSwitchMode, isMeetingRunning, isCommanding, focusedItemId });
@@ -606,154 +1084,335 @@ export default function App() {
       </div>
       {showSettings && (
           <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-8">
-              <div className="bg-[#111] border border-white/10 rounded-2xl w-full max-w-2xl h-[600px] flex flex-col">
-                  <div className="p-6 border-b border-white/10 flex justify-between items-center"><h2 className="text-xl font-light">Project Configuration</h2><button onClick={() => setShowSettings(false)}>✕</button></div>
-                  <div className="flex border-b border-white/5 px-6">
-                      <button onClick={() => setSettingsTab('ADO')} className={`px-4 py-3 text-xs font-bold ${settingsTab === 'ADO' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500'}`}>Integrations</button>
-                      <button onClick={() => setSettingsTab('KNOWLEDGE')} className={`px-4 py-3 text-xs font-bold ${settingsTab === 'KNOWLEDGE' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500'}`}>Knowledge Base</button>
+              <div className="bg-[#111] border border-white/10 rounded-2xl w-full max-w-6xl h-[88vh] flex flex-col">
+                  <div className="p-6 border-b border-white/10 flex justify-between items-center">
+                      <h2 className="text-xl font-light">Project Configuration</h2>
+                      <button onClick={() => setShowSettings(false)}>✕</button>
+                  </div>
+                  <div className="flex border-b border-white/5 px-4 overflow-x-auto">
+                      <button onClick={() => setSettingsTab('AI_PROVIDERS')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'AI_PROVIDERS' ? 'border-b-2 border-cyan-400 text-white' : 'text-gray-500'}`}>AI Providers</button>
+                      <button onClick={() => setSettingsTab('MCP_SERVERS')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'MCP_SERVERS' ? 'border-b-2 border-emerald-400 text-white' : 'text-gray-500'}`}>MCP Servers</button>
+                      <button onClick={() => setSettingsTab('CONTEXT_POLICY')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'CONTEXT_POLICY' ? 'border-b-2 border-orange-400 text-white' : 'text-gray-500'}`}>Context Policy</button>
+                      <button onClick={() => setSettingsTab('ADO')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'ADO' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500'}`}>Integrations</button>
+                      <button onClick={() => setSettingsTab('KNOWLEDGE')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'KNOWLEDGE' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500'}`}>Knowledge Base</button>
                   </div>
                   <div className="p-6 overflow-y-auto flex-1">
-                      {settingsTab === 'ADO' && (
-                          <div className="space-y-4 max-w-md mx-auto">
-                              <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Org" value={adoConfig.organization} onChange={e => setAdoConfig({...adoConfig, organization: e.target.value})} />
-                              <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Project" value={adoConfig.project} onChange={e => setAdoConfig({...adoConfig, project: e.target.value})} />
-                              <input type="password" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="PAT" value={adoConfig.pat} onChange={e => setAdoConfig({...adoConfig, pat: e.target.value})} />
-                              <div className="pt-4 border-t border-white/10">
-                                  <label className="block text-xs font-mono uppercase tracking-wider text-slate-400 mb-2">Writer Provider</label>
-                                  <select
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      value={providerSelection.writer}
-                                      onChange={e => handleWriterProviderChange(e.target.value as WriterProviderId)}
+                      {settingsTab === 'AI_PROVIDERS' && (
+                          <div className="space-y-6">
+                              <div className="flex items-center justify-between">
+                                  <h3 className="text-sm font-mono uppercase tracking-wider text-cyan-300">Provider Routing</h3>
+                                  <button
+                                      onClick={refreshProviderCatalog}
+                                      disabled={isProviderCatalogLoading}
+                                      className="px-3 py-1 rounded border border-white/15 text-xs text-slate-300 hover:bg-white/5 disabled:opacity-50"
                                   >
-                                      <option value="gemini">Gemini (default)</option>
-                                      <option value="openai">OpenAI (feature-flagged)</option>
-                                      <option value="anthropic">Anthropic (feature-flagged)</option>
-                                  </select>
-                                  <p className="text-[11px] text-slate-500 mt-2">
-                                      Transcription provider remains Gemini for this milestone runtime.
-                                  </p>
+                                      {isProviderCatalogLoading ? 'Refreshing...' : 'Refresh Status'}
+                                  </button>
                               </div>
-                              <div className="pt-4 border-t border-white/10 space-y-3">
-                                  <div className="text-xs font-mono uppercase tracking-wider text-slate-400">OpenAI Writer Runtime</div>
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Summary model"
-                                      value={writerProviderRuntimeConfig.openai.summaryModel}
-                                      onChange={e => handleOpenAiRuntimeConfigChange('summaryModel', e.target.value)}
-                                  />
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Analysis model"
-                                      value={writerProviderRuntimeConfig.openai.analysisModel}
-                                      onChange={e => handleOpenAiRuntimeConfigChange('analysisModel', e.target.value)}
-                                  />
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Refine model"
-                                      value={writerProviderRuntimeConfig.openai.refineModel}
-                                      onChange={e => handleOpenAiRuntimeConfigChange('refineModel', e.target.value)}
-                                  />
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Fallback model"
-                                      value={writerProviderRuntimeConfig.openai.fallbackModel}
-                                      onChange={e => handleOpenAiRuntimeConfigChange('fallbackModel', e.target.value)}
-                                  />
-                                  <div className="grid grid-cols-2 gap-3">
-                                      <input
-                                          type="number"
-                                          min={0}
-                                          max={2}
-                                          step={0.1}
+                              {providerCatalogError && (
+                                  <div className="text-xs text-rose-300 bg-rose-900/20 border border-rose-500/30 rounded p-3">{providerCatalogError}</div>
+                              )}
+                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                  <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
+                                      <div className="text-xs font-mono uppercase tracking-wider text-slate-400">Writer Provider</div>
+                                      <select
                                           className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                          placeholder="Temperature"
-                                          value={writerProviderRuntimeConfig.openai.temperature}
-                                          onChange={e => handleOpenAiRuntimeConfigChange('temperature', Number(e.target.value))}
-                                      />
-                                      <input
-                                          type="number"
-                                          min={64}
-                                          max={4096}
-                                          step={1}
-                                          className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                          placeholder="Max output tokens"
-                                          value={writerProviderRuntimeConfig.openai.maxOutputTokens}
-                                          onChange={e => handleOpenAiRuntimeConfigChange('maxOutputTokens', Number(e.target.value))}
-                                      />
+                                          value={providerSelection.writer}
+                                          onChange={e => handleWriterProviderChange(e.target.value as WriterProviderId)}
+                                      >
+                                          <option value="gemini">Gemini</option>
+                                          <option value="openai">OpenAI</option>
+                                          <option value="anthropic">Anthropic</option>
+                                      </select>
+                                      <div className="text-[11px] text-slate-500">
+                                          Controls summarization, extraction, and refinement output.
+                                      </div>
                                   </div>
-                                  <p className="text-[11px] text-slate-500">
-                                      Used only when Writer Provider is set to OpenAI.
-                                  </p>
-                              </div>
-                              <div className="pt-4 border-t border-white/10 space-y-3">
-                                  <div className="text-xs font-mono uppercase tracking-wider text-slate-400">Anthropic Writer Runtime</div>
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Summary model"
-                                      value={writerProviderRuntimeConfig.anthropic.summaryModel}
-                                      onChange={e => handleAnthropicRuntimeConfigChange('summaryModel', e.target.value)}
-                                  />
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Analysis model"
-                                      value={writerProviderRuntimeConfig.anthropic.analysisModel}
-                                      onChange={e => handleAnthropicRuntimeConfigChange('analysisModel', e.target.value)}
-                                  />
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Refine model"
-                                      value={writerProviderRuntimeConfig.anthropic.refineModel}
-                                      onChange={e => handleAnthropicRuntimeConfigChange('refineModel', e.target.value)}
-                                  />
-                                  <input
-                                      type="text"
-                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                      placeholder="Fallback model"
-                                      value={writerProviderRuntimeConfig.anthropic.fallbackModel}
-                                      onChange={e => handleAnthropicRuntimeConfigChange('fallbackModel', e.target.value)}
-                                  />
-                                  <div className="grid grid-cols-2 gap-3">
-                                      <input
-                                          type="number"
-                                          min={0}
-                                          max={2}
-                                          step={0.1}
+                                  <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
+                                      <div className="text-xs font-mono uppercase tracking-wider text-slate-400">Transcription Provider</div>
+                                      <select
                                           className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                          placeholder="Temperature"
-                                          value={writerProviderRuntimeConfig.anthropic.temperature}
-                                          onChange={e => handleAnthropicRuntimeConfigChange('temperature', Number(e.target.value))}
-                                      />
-                                      <input
-                                          type="number"
-                                          min={64}
-                                          max={4096}
-                                          step={1}
-                                          className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
-                                          placeholder="Max output tokens"
-                                          value={writerProviderRuntimeConfig.anthropic.maxOutputTokens}
-                                          onChange={e => handleAnthropicRuntimeConfigChange('maxOutputTokens', Number(e.target.value))}
-                                      />
+                                          value={providerSelection.transcription}
+                                          onChange={e => handleTranscriptionProviderChange(e.target.value as TranscriptionProviderId)}
+                                      >
+                                          <option value="gemini">Gemini</option>
+                                      </select>
+                                      <div className="text-[11px] text-slate-500">
+                                          Real-time transcription currently uses Gemini in this runtime.
+                                      </div>
                                   </div>
-                                  <p className="text-[11px] text-slate-500">
-                                      Used only when Writer Provider is set to Anthropic.
-                                  </p>
                               </div>
+                              <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                  <div className="text-xs font-mono uppercase tracking-wider text-slate-400 mb-3">Backend Provider Availability</div>
+                                  {!providerCatalog && !isProviderCatalogLoading && (
+                                      <div className="text-xs text-slate-500">No status loaded yet.</div>
+                                  )}
+                                  {providerCatalog && (
+                                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                          {providerCatalog.writers.map(writer => (
+                                              <div key={writer.id} className="border border-white/10 rounded-lg p-3 bg-black/20">
+                                                  <div className="flex justify-between items-center">
+                                                      <span className="text-sm font-semibold uppercase">{writer.id}</span>
+                                                      <span className={`text-[10px] px-2 py-1 rounded ${writer.available ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-600/40 text-slate-300'}`}>
+                                                          {writer.available ? 'Available' : 'Unavailable'}
+                                                      </span>
+                                                  </div>
+                                                  <div className="text-[11px] text-slate-400 mt-2 space-y-1">
+                                                      <div>Enabled: {writer.enabled ? 'yes' : 'no'}</div>
+                                                      <div>Configured: {writer.configured ? 'yes' : 'no'}</div>
+                                                      <div>Tool calls: {writer.capabilities.toolCallSupport ? 'yes' : 'no'}</div>
+                                                  </div>
+                                              </div>
+                                          ))}
+                                      </div>
+                                  )}
+                              </div>
+                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                  <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
+                                      <div className="text-xs font-mono uppercase tracking-wider text-slate-400">OpenAI Writer Runtime</div>
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Summary model" value={writerProviderRuntimeConfig.openai.summaryModel} onChange={e => handleOpenAiRuntimeConfigChange('summaryModel', e.target.value)} />
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Analysis model" value={writerProviderRuntimeConfig.openai.analysisModel} onChange={e => handleOpenAiRuntimeConfigChange('analysisModel', e.target.value)} />
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Refine model" value={writerProviderRuntimeConfig.openai.refineModel} onChange={e => handleOpenAiRuntimeConfigChange('refineModel', e.target.value)} />
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Fallback model" value={writerProviderRuntimeConfig.openai.fallbackModel} onChange={e => handleOpenAiRuntimeConfigChange('fallbackModel', e.target.value)} />
+                                      <div className="grid grid-cols-2 gap-3">
+                                          <input type="number" min={0} max={2} step={0.1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Temperature" value={writerProviderRuntimeConfig.openai.temperature} onChange={e => handleOpenAiRuntimeConfigChange('temperature', Number(e.target.value))} />
+                                          <input type="number" min={64} max={4096} step={1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Max output tokens" value={writerProviderRuntimeConfig.openai.maxOutputTokens} onChange={e => handleOpenAiRuntimeConfigChange('maxOutputTokens', Number(e.target.value))} />
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-3">
+                                          <input type="number" min={5000} max={60000} step={1000} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Timeout ms" value={writerProviderRuntimeConfig.openai.requestTimeoutMs} onChange={e => handleOpenAiRuntimeConfigChange('requestTimeoutMs', Number(e.target.value))} />
+                                          <input type="number" min={0} max={4} step={1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Retries" value={writerProviderRuntimeConfig.openai.maxRetries} onChange={e => handleOpenAiRuntimeConfigChange('maxRetries', Number(e.target.value))} />
+                                      </div>
+                                  </div>
+                                  <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
+                                      <div className="text-xs font-mono uppercase tracking-wider text-slate-400">Anthropic Writer Runtime</div>
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Summary model" value={writerProviderRuntimeConfig.anthropic.summaryModel} onChange={e => handleAnthropicRuntimeConfigChange('summaryModel', e.target.value)} />
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Analysis model" value={writerProviderRuntimeConfig.anthropic.analysisModel} onChange={e => handleAnthropicRuntimeConfigChange('analysisModel', e.target.value)} />
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Refine model" value={writerProviderRuntimeConfig.anthropic.refineModel} onChange={e => handleAnthropicRuntimeConfigChange('refineModel', e.target.value)} />
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Fallback model" value={writerProviderRuntimeConfig.anthropic.fallbackModel} onChange={e => handleAnthropicRuntimeConfigChange('fallbackModel', e.target.value)} />
+                                      <div className="grid grid-cols-2 gap-3">
+                                          <input type="number" min={0} max={2} step={0.1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Temperature" value={writerProviderRuntimeConfig.anthropic.temperature} onChange={e => handleAnthropicRuntimeConfigChange('temperature', Number(e.target.value))} />
+                                          <input type="number" min={64} max={4096} step={1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Max output tokens" value={writerProviderRuntimeConfig.anthropic.maxOutputTokens} onChange={e => handleAnthropicRuntimeConfigChange('maxOutputTokens', Number(e.target.value))} />
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-3">
+                                          <input type="number" min={5000} max={60000} step={1000} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Timeout ms" value={writerProviderRuntimeConfig.anthropic.requestTimeoutMs} onChange={e => handleAnthropicRuntimeConfigChange('requestTimeoutMs', Number(e.target.value))} />
+                                          <input type="number" min={0} max={4} step={1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Retries" value={writerProviderRuntimeConfig.anthropic.maxRetries} onChange={e => handleAnthropicRuntimeConfigChange('maxRetries', Number(e.target.value))} />
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                      )}
+                      {settingsTab === 'MCP_SERVERS' && (
+                          <div className="space-y-6">
+                              <div className="flex items-center justify-between">
+                                  <h3 className="text-sm font-mono uppercase tracking-wider text-emerald-300">MCP Registry</h3>
+                                  <div className="flex items-center gap-2">
+                                      <button onClick={resetMcpEditor} className="px-3 py-1 rounded border border-white/15 text-xs text-slate-300 hover:bg-white/5">New Server</button>
+                                      <button onClick={refreshMcpServers} disabled={isMcpLoading} className="px-3 py-1 rounded border border-white/15 text-xs text-slate-300 hover:bg-white/5 disabled:opacity-50">
+                                          {isMcpLoading ? 'Refreshing...' : 'Refresh'}
+                                      </button>
+                                  </div>
+                              </div>
+                              {mcpError && <div className="text-xs text-rose-300 bg-rose-900/20 border border-rose-500/30 rounded p-3">{mcpError}</div>}
+                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                  <div className="space-y-3 max-h-[58vh] overflow-y-auto pr-1">
+                                      {mcpServers.length === 0 && (
+                                          <div className="text-xs text-slate-500 border border-dashed border-white/10 rounded-xl p-6 text-center">
+                                              No MCP servers configured.
+                                          </div>
+                                      )}
+                                      {mcpServers.map((server, index) => (
+                                          <div key={server.id} className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
+                                              <div className="flex justify-between items-start gap-3">
+                                                  <div>
+                                                      <div className="text-sm font-semibold">{server.name}</div>
+                                                      <div className="text-[11px] text-slate-400 font-mono">{server.id} • {server.transport}</div>
+                                                      <div className="text-xs text-slate-500 mt-1 break-all">{server.endpointOrCommand}</div>
+                                                  </div>
+                                                  <span className={`text-[10px] px-2 py-1 rounded ${server.health.state === 'closed' ? 'bg-emerald-500/20 text-emerald-300' : server.health.state === 'half-open' ? 'bg-amber-500/20 text-amber-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                                                      {server.health.state}
+                                                  </span>
+                                              </div>
+                                              <div className="text-[11px] text-slate-400 grid grid-cols-2 gap-2">
+                                                  <div>Priority: {server.priority}</div>
+                                                  <div>Enabled: {server.enabled ? 'yes' : 'no'}</div>
+                                                  <div>Req timeout: {server.timeouts.requestMs} ms</div>
+                                                  <div>Failures: {server.health.consecutiveFailures}</div>
+                                              </div>
+                                              <div className="flex flex-wrap gap-2">
+                                                  <button onClick={() => moveMcpServerPriority(server.id, -1)} disabled={index === 0} className="px-2 py-1 text-[11px] rounded border border-white/10 disabled:opacity-40">↑</button>
+                                                  <button onClick={() => moveMcpServerPriority(server.id, 1)} disabled={index === mcpServers.length - 1} className="px-2 py-1 text-[11px] rounded border border-white/10 disabled:opacity-40">↓</button>
+                                                  <button onClick={() => toggleMcpServerEnabled(server.id, !server.enabled)} className={`px-2 py-1 text-[11px] rounded border ${server.enabled ? 'border-emerald-400/40 text-emerald-300' : 'border-slate-500/40 text-slate-300'}`}>{server.enabled ? 'Disable' : 'Enable'}</button>
+                                                  <button onClick={() => loadMcpServerIntoEditor(server)} className="px-2 py-1 text-[11px] rounded border border-blue-400/40 text-blue-300">Edit</button>
+                                                  <button onClick={() => deleteMcpServer(server.id)} className="px-2 py-1 text-[11px] rounded border border-rose-400/40 text-rose-300">Delete</button>
+                                                  <button onClick={() => testMcpServerConnection(server.id)} disabled={Boolean(mcpTestingById[server.id])} className="px-2 py-1 text-[11px] rounded border border-cyan-400/40 text-cyan-300 disabled:opacity-50">
+                                                      {mcpTestingById[server.id] ? 'Testing...' : 'Test'}
+                                                  </button>
+                                              </div>
+                                              {mcpTestResults[server.id] && (
+                                                  <div className={`text-[11px] rounded border p-2 ${mcpTestResults[server.id].reachable ? 'bg-emerald-900/20 border-emerald-500/30 text-emerald-200' : 'bg-rose-900/20 border-rose-500/30 text-rose-200'}`}>
+                                                      {mcpTestResults[server.id].reachable
+                                                          ? `Reachable in ${mcpTestResults[server.id].latencyMs} ms`
+                                                          : `${mcpTestResults[server.id].errorCode || 'MCP_TEST_FAILED'}: ${mcpTestResults[server.id].errorMessage || 'Request failed'}`}
+                                                  </div>
+                                              )}
+                                          </div>
+                                      ))}
+                                  </div>
+                                  <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
+                                      <div className="text-xs font-mono uppercase tracking-wider text-slate-400">{editingMcpServerId ? `Edit Server: ${editingMcpServerId}` : 'Create MCP Server'}</div>
+                                      <div className="grid grid-cols-2 gap-2">
+                                          <input type="text" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Server ID" value={mcpEditor.id} disabled={Boolean(editingMcpServerId)} onChange={e => setMcpEditor(prev => ({ ...prev, id: e.target.value }))} />
+                                          <input type="text" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Name" value={mcpEditor.name} onChange={e => setMcpEditor(prev => ({ ...prev, name: e.target.value }))} />
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-2">
+                                          <select className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={mcpEditor.transport} onChange={e => setMcpEditor(prev => ({ ...prev, transport: e.target.value as McpTransport }))}>
+                                              <option value="http">http</option>
+                                              <option value="command">command</option>
+                                          </select>
+                                          <input type="number" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={mcpEditor.priority} onChange={e => setMcpEditor(prev => ({ ...prev, priority: Number(e.target.value) }))} placeholder="Priority" />
+                                      </div>
+                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Endpoint URL or command" value={mcpEditor.endpointOrCommand} onChange={e => setMcpEditor(prev => ({ ...prev, endpointOrCommand: e.target.value }))} />
+                                      <div className="grid grid-cols-2 gap-2">
+                                          <input type="number" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={mcpEditor.requestMs} onChange={e => setMcpEditor(prev => ({ ...prev, requestMs: Number(e.target.value) }))} placeholder="Request ms" />
+                                          <input type="number" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={mcpEditor.cooldownMs} onChange={e => setMcpEditor(prev => ({ ...prev, cooldownMs: Number(e.target.value) }))} placeholder="Cooldown ms" />
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-2">
+                                          <input type="number" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={mcpEditor.failureThreshold} onChange={e => setMcpEditor(prev => ({ ...prev, failureThreshold: Number(e.target.value) }))} placeholder="Failure threshold" />
+                                          <input type="number" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={mcpEditor.maxPayload} onChange={e => setMcpEditor(prev => ({ ...prev, maxPayload: Number(e.target.value) }))} placeholder="Max payload chars" />
+                                      </div>
+                                      <label className="flex items-center gap-2 text-xs text-slate-300">
+                                          <input type="checkbox" checked={mcpEditor.enabled} onChange={e => setMcpEditor(prev => ({ ...prev, enabled: e.target.checked }))} />
+                                          Enabled
+                                      </label>
+                                      <textarea className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm min-h-[72px]" placeholder="Allowed resources (one per line)" value={mcpEditor.allowedResourcesText} onChange={e => setMcpEditor(prev => ({ ...prev, allowedResourcesText: e.target.value }))} />
+                                      <div className="pt-2 border-t border-white/10 space-y-2">
+                                          <select className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={mcpEditor.authType} onChange={e => setMcpEditor(prev => ({ ...prev, authType: e.target.value as McpAuthType }))}>
+                                              <option value="none">Auth: none</option>
+                                              <option value="bearer">Auth: bearer</option>
+                                              <option value="basic">Auth: basic</option>
+                                              <option value="header">Auth: custom header</option>
+                                          </select>
+                                          {mcpEditor.authType === 'bearer' && (
+                                              <div className="grid grid-cols-2 gap-2">
+                                                  <input type="password" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Bearer token" value={mcpEditor.bearerToken} onChange={e => setMcpEditor(prev => ({ ...prev, bearerToken: e.target.value }))} />
+                                                  <input type="text" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Env var (optional)" value={mcpEditor.bearerEnvVar} onChange={e => setMcpEditor(prev => ({ ...prev, bearerEnvVar: e.target.value }))} />
+                                              </div>
+                                          )}
+                                          {mcpEditor.authType === 'basic' && (
+                                              <div className="grid grid-cols-2 gap-2">
+                                                  <input type="text" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Username" value={mcpEditor.basicUsername} onChange={e => setMcpEditor(prev => ({ ...prev, basicUsername: e.target.value }))} />
+                                                  <input type="password" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Password" value={mcpEditor.basicPassword} onChange={e => setMcpEditor(prev => ({ ...prev, basicPassword: e.target.value }))} />
+                                                  <input type="text" className="col-span-2 bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Password env var (optional)" value={mcpEditor.basicPasswordEnvVar} onChange={e => setMcpEditor(prev => ({ ...prev, basicPasswordEnvVar: e.target.value }))} />
+                                              </div>
+                                          )}
+                                          {mcpEditor.authType === 'header' && (
+                                              <div className="grid grid-cols-2 gap-2">
+                                                  <input type="text" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Header name" value={mcpEditor.headerName} onChange={e => setMcpEditor(prev => ({ ...prev, headerName: e.target.value }))} />
+                                                  <input type="password" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Header value" value={mcpEditor.headerValue} onChange={e => setMcpEditor(prev => ({ ...prev, headerValue: e.target.value }))} />
+                                                  <input type="text" className="col-span-2 bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Header value env var (optional)" value={mcpEditor.headerValueEnvVar} onChange={e => setMcpEditor(prev => ({ ...prev, headerValueEnvVar: e.target.value }))} />
+                                              </div>
+                                          )}
+                                          {mcpEditor.authType !== 'none' && (
+                                              <label className="flex items-center gap-2 text-xs text-slate-300">
+                                                  <input type="checkbox" checked={mcpEditor.preserveExistingSecret} onChange={e => setMcpEditor(prev => ({ ...prev, preserveExistingSecret: e.target.checked }))} />
+                                                  Preserve existing secret when secret input is blank
+                                              </label>
+                                          )}
+                                      </div>
+                                      <div className="flex gap-2 pt-2">
+                                          <button onClick={saveMcpServer} disabled={isSavingMcpServer} className="px-4 py-2 rounded bg-emerald-600/80 hover:bg-emerald-500 text-xs font-bold disabled:opacity-50">
+                                              {isSavingMcpServer ? 'Saving...' : editingMcpServerId ? 'Save Changes' : 'Create Server'}
+                                          </button>
+                                          <button onClick={resetMcpEditor} className="px-4 py-2 rounded border border-white/15 text-xs">Reset</button>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                      )}
+                      {settingsTab === 'CONTEXT_POLICY' && (
+                          <div className="space-y-6 max-w-3xl">
+                              <div className="flex items-center justify-between">
+                                  <h3 className="text-sm font-mono uppercase tracking-wider text-orange-300">Auto-Smart Retrieval Policy</h3>
+                                  <div className="flex items-center gap-2">
+                                      <button onClick={() => setContextPolicyConfig({ ...DEFAULT_CONTEXT_POLICY_CONFIG })} className="px-3 py-1 rounded border border-white/15 text-xs text-slate-300 hover:bg-white/5">Reset Defaults</button>
+                                      <button onClick={triggerManualEnrich} className="px-3 py-1 rounded bg-orange-600/80 hover:bg-orange-500 text-xs font-bold">Manual Enrich Next Analysis</button>
+                                  </div>
+                              </div>
+                              {manualEnrichPending && (
+                                  <div className="text-xs text-orange-200 bg-orange-900/20 border border-orange-500/40 rounded p-3">
+                                      Manual enrich is armed and will run on the next analysis pass.
+                                  </div>
+                              )}
+                              <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-4">
+                                  <div>
+                                      <label className="block text-xs font-mono uppercase tracking-wider text-slate-400 mb-2">Default Mode</label>
+                                      <select
+                                          className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                          value={contextPolicyConfig.mode}
+                                          onChange={e => handleContextPolicyConfigChange('mode', e.target.value as ContextPolicyConfig['mode'])}
+                                      >
+                                          <option value="auto-smart">Auto-Smart (default)</option>
+                                          <option value="manual-enrich">Manual Enrich (always)</option>
+                                      </select>
+                                  </div>
+                                  <div>
+                                      <label className="block text-xs text-slate-400 mb-1">Global Token Budget</label>
+                                      <div className="flex items-center gap-3">
+                                          <input type="range" min={200} max={6000} step={50} className="flex-1" value={contextPolicyConfig.globalTokenBudget} onChange={e => handleContextPolicyConfigChange('globalTokenBudget', Number(e.target.value))} />
+                                          <input type="number" min={200} max={6000} className="w-28 bg-black/50 border border-white/10 rounded px-2 py-1 text-sm" value={contextPolicyConfig.globalTokenBudget} onChange={e => handleContextPolicyConfigChange('globalTokenBudget', Number(e.target.value))} />
+                                      </div>
+                                  </div>
+                                  <div>
+                                      <label className="block text-xs text-slate-400 mb-1">Per-Server Token Budget</label>
+                                      <div className="flex items-center gap-3">
+                                          <input type="range" min={120} max={3000} step={20} className="flex-1" value={contextPolicyConfig.perServerTokenBudget} onChange={e => handleContextPolicyConfigChange('perServerTokenBudget', Number(e.target.value))} />
+                                          <input type="number" min={120} max={3000} className="w-28 bg-black/50 border border-white/10 rounded px-2 py-1 text-sm" value={contextPolicyConfig.perServerTokenBudget} onChange={e => handleContextPolicyConfigChange('perServerTokenBudget', Number(e.target.value))} />
+                                      </div>
+                                  </div>
+                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                      <div>
+                                          <label className="block text-xs text-slate-400 mb-1">Max Snippets</label>
+                                          <input type="number" min={1} max={20} className="w-full bg-black/50 border border-white/10 rounded px-2 py-2 text-sm" value={contextPolicyConfig.maxSnippetCount} onChange={e => handleContextPolicyConfigChange('maxSnippetCount', Number(e.target.value))} />
+                                      </div>
+                                      <div>
+                                          <label className="block text-xs text-slate-400 mb-1">Max Snippet Chars</label>
+                                          <input type="number" min={80} max={8000} className="w-full bg-black/50 border border-white/10 rounded px-2 py-2 text-sm" value={contextPolicyConfig.maxSnippetChars} onChange={e => handleContextPolicyConfigChange('maxSnippetChars', Number(e.target.value))} />
+                                      </div>
+                                      <div>
+                                          <label className="block text-xs text-slate-400 mb-1">Cache TTL (ms)</label>
+                                          <input type="number" min={10000} max={600000} step={1000} className="w-full bg-black/50 border border-white/10 rounded px-2 py-2 text-sm" value={contextPolicyConfig.cacheTtlMs} onChange={e => handleContextPolicyConfigChange('cacheTtlMs', Number(e.target.value))} />
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                      )}
+                      {settingsTab === 'ADO' && (
+                          <div className="space-y-4 max-w-md">
+                              <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Org" value={adoConfig.organization} onChange={e => setAdoConfig({ ...adoConfig, organization: e.target.value })} />
+                              <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Project" value={adoConfig.project} onChange={e => setAdoConfig({ ...adoConfig, project: e.target.value })} />
+                              <input type="password" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="PAT" value={adoConfig.pat} onChange={e => setAdoConfig({ ...adoConfig, pat: e.target.value })} />
                           </div>
                       )}
                       {settingsTab === 'KNOWLEDGE' && (
                           <div className="space-y-6">
                               <div onClick={() => contextFileInputRef.current?.click()} className="border-2 border-dashed border-white/10 rounded-xl h-[120px] flex items-center justify-center cursor-pointer text-gray-500">Upload Context Files (Multiple)</div>
                               <input type="file" ref={contextFileInputRef} className="hidden" onChange={handleContextFileUpload} multiple />
-                              <div className="space-y-2">{contextSources.map(src => (
-                                  <div key={src.id} className="flex items-center justify-between bg-white/5 p-3 rounded-lg"><span className="text-sm">{src.name}</span><button onClick={() => setContextSources(prev => prev.filter(s => s.id !== src.id))} className="text-red-500 text-xs">Remove</button></div>
-                              ))}</div>
+                              <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+                                  <input type="text" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Source title" value={newSourceTitle} onChange={e => setNewSourceTitle(e.target.value)} />
+                                  <input type="text" className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Pasted context text" value={newSourceText} onChange={e => setNewSourceText(e.target.value)} />
+                                  <button onClick={addTextSource} className="px-3 py-2 rounded bg-purple-600/80 text-xs font-bold">Add Text</button>
+                              </div>
+                              <div className="space-y-2">
+                                  {contextSources.map(src => (
+                                      <div key={src.id} className="flex items-center justify-between bg-white/5 p-3 rounded-lg border border-white/10">
+                                          <label className="flex items-center gap-2">
+                                              <input type="checkbox" checked={src.enabled} onChange={e => setContextSources(prev => prev.map(entry => entry.id === src.id ? { ...entry, enabled: e.target.checked } : entry))} />
+                                              <span className="text-sm">{src.name}</span>
+                                          </label>
+                                          <button onClick={() => setContextSources(prev => prev.filter(s => s.id !== src.id))} className="text-red-500 text-xs">Remove</button>
+                                      </div>
+                                  ))}
+                              </div>
                           </div>
                       )}
                   </div>

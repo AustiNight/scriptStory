@@ -62,6 +62,10 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
         cardRotation = 'rotateX(5deg)'; 
         yShift = '-150px'; 
     }
+    else if (focusedField === 'contextTrace') {
+        cardRotation = 'rotateX(7deg)';
+        yShift = '-190px';
+    }
     else if (focusedField === 'meta') {
         cardRotation = 'rotateX(10deg)'; 
         yShift = '-220px'; 
@@ -111,7 +115,7 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
       onClick={onClick}
       className={`
         absolute top-1/2 left-1/2 
-        w-[700px] h-[650px] rounded-3xl border backdrop-blur-3xl p-6
+        w-[700px] h-[760px] rounded-3xl border backdrop-blur-3xl p-6
         transition-all duration-700 ease-[cubic-bezier(0.23,1,0.32,1)]
         ${typeColors[item.type]}
         flex flex-col gap-4
@@ -343,7 +347,54 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
         )}
       </div>
 
-      {/* 5. Footer Meta Data */}
+      {/* 5. Context Trace */}
+      <div
+        onClick={(e) => { e.stopPropagation(); onFieldClick('contextTrace'); }}
+        className="relative min-h-[92px] p-4 rounded-xl border border-transparent transition-all duration-500 bg-[#0f0f11]/40 overflow-y-auto"
+        style={getFieldStyle('contextTrace')}
+      >
+        <div className="text-xs text-cyan-300/50 uppercase tracking-widest mb-2 font-bold">Context Trace</div>
+        {!item.contextTrace ? (
+          <div className="text-xs text-white/25 italic">No MCP citation trace captured for this item yet.</div>
+        ) : (
+          <div className="space-y-2 text-xs text-slate-300">
+            <div className="flex flex-wrap gap-2">
+              <span className="px-2 py-1 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-200 uppercase">
+                {item.contextTrace.provider}
+              </span>
+              <span className="px-2 py-1 rounded bg-slate-600/30 border border-slate-500/40">
+                {item.contextTrace.retrieval.policy.mode}
+              </span>
+              <span className="px-2 py-1 rounded bg-slate-600/30 border border-slate-500/40">
+                Confidence: {Math.round((item.contextTrace.confidence.score || 0) * 100)}%
+              </span>
+              <span className="px-2 py-1 rounded bg-slate-600/30 border border-slate-500/40">
+                Snippets: {item.contextTrace.retrieval.budgets.usedSnippetCount}
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Tokens used: {item.contextTrace.retrieval.budgets.usedGlobalTokens} / {item.contextTrace.retrieval.budgets.globalTokenBudget} • Cache hits: {item.contextTrace.retrieval.cache.hits}
+            </div>
+            <div className="space-y-2">
+              {(item.contextTrace.citations || []).slice(0, 3).map((citation) => (
+                <div key={citation.id} className="bg-black/25 border border-white/10 rounded p-2">
+                  <div className="text-[11px] text-cyan-200">
+                    {citation.serverName}
+                    {citation.resource ? ` • ${citation.resource}` : ''}
+                    {citation.truncated ? ' • truncated' : ''}
+                  </div>
+                  <div className="text-[11px] text-slate-400 line-clamp-3 mt-1">{citation.excerpt}</div>
+                </div>
+              ))}
+              {(item.contextTrace.citations || []).length === 0 && (
+                <div className="text-[11px] text-slate-500 italic">No citation snippets were attached to this call.</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 6. Footer Meta Data */}
       <div 
          onClick={(e) => { e.stopPropagation(); onFieldClick('meta'); }}
          className="relative shrink-0 flex justify-between items-center pt-2 p-4 rounded-xl border border-transparent transition-all duration-500 bg-[#0f0f11]/40"
