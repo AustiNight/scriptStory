@@ -84,3 +84,71 @@ test("McpGateway opens circuit after repeated failures and recovers after cooldo
   assert.ok(recovered.outputSnippet);
   assert.equal(recovered.outputSnippet?.text, "context is available");
 });
+
+test("McpGateway queryServer sanitizes snippets and preserves resource tags", async () => {
+  const { registryFilePath, secretsFilePath, auditLogPath } = await createTempPaths();
+  const store = new McpRegistryStore({ registryFilePath, secretsFilePath });
+
+  await store.createServer({
+    id: "knowledge-http",
+    name: "Knowledge HTTP",
+    transport: "http",
+    endpointOrCommand: "http://127.0.0.1:7560/mcp",
+    auth: { type: "none" },
+    enabled: true,
+    priority: 10,
+    timeouts: {
+      requestMs: 2_000,
+      cooldownMs: 2_000,
+      failureThreshold: 2,
+    },
+    maxPayload: 4_000,
+    allowedResources: [],
+  });
+
+  const gateway = new McpGateway({
+    registryStore: store,
+    auditLogPath,
+    fetchImpl: async (_input, init) => {
+      const body = JSON.parse(String(init?.body || "{}")) as {
+        type?: string;
+        payload?: Record<string, unknown>;
+      };
+
+      assert.equal(body.type, "mcp-context-query");
+      assert.equal(typeof body.payload?.query, "string");
+
+      return new Response(
+        JSON.stringify({
+          snippets: [
+            {
+              resource: "runbooks/auth.md",
+              text: "<b>OAuth token rotation</b> steps and contacts.",
+            },
+            {
+              resource: "docs/limits.md",
+              text: "API rate limits and retry hints.",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    },
+  });
+
+  const result = await gateway.queryServer("knowledge-http", {
+    query: "oauth token policy",
+    maxSnippets: 2,
+    maxSnippetChars: 80,
+  });
+
+  assert.equal(result.reachable, true);
+  assert.equal(result.errorCode, undefined);
+  assert.equal(result.snippets.length, 2);
+  assert.equal(result.snippets[0].source.resource, "runbooks/auth.md");
+  assert.equal(result.snippets[0].text.includes("<b>"), false);
+  assert.equal(result.snippets[0].text.includes("OAuth token rotation"), true);
+});

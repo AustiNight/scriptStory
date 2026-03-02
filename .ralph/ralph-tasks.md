@@ -76,19 +76,19 @@
   - [x] Add per-server circuit breaker state and health tracking to avoid repeated failures.
   - [x] Acceptance Criteria: Single local user can add arbitrary MCP server configs, test connectivity, enable/disable servers, and persist state across restarts.
 
-- [ ] Epic: Implement Token-Efficient Context Retrieval Strategy (Recommended Hybrid)
-  - [ ] Implement default `Auto-Smart Retrieval` policy:
+- [x] Epic: Implement Token-Efficient Context Retrieval Strategy (Recommended Hybrid)
+  - [x] Implement default `Auto-Smart Retrieval` policy:
     - Stage 1: low-token intent classification decides whether external context is needed.
     - Stage 2: fetch candidates from enabled MCP servers, rank, and include only top snippets under strict token budget.
-  - [ ] Implement manual `Enrich Context` path to force deeper retrieval for difficult/ambiguous items.
-  - [ ] Add confidence-based escalation: if initial generation confidence/validation is low, perform a second pass with expanded context budget before returning output.
-  - [ ] Implement budget controller with explicit caps:
+  - [x] Implement manual `Enrich Context` path to force deeper retrieval for difficult/ambiguous items.
+  - [x] Add confidence-based escalation: if initial generation confidence/validation is low, perform a second pass with expanded context budget before returning output.
+  - [x] Implement budget controller with explicit caps:
     - Global per-request context token budget.
     - Per-server quota cap.
     - Hard ceiling on attached snippet count and snippet length.
-  - [ ] Add cache for MCP retrieval results (query hash + TTL) to reduce repeated token spend across iterative edits.
-  - [ ] Add citation objects in tool-call metadata so each generated work-item can show which MCP source snippets influenced output.
-  - [ ] Acceptance Criteria: Default flow minimizes token usage via bounded retrieval, while manual enrichment can increase fidelity on demand; citations are available for generated items.
+  - [x] Add cache for MCP retrieval results (query hash + TTL) to reduce repeated token spend across iterative edits.
+  - [x] Add citation objects in tool-call metadata so each generated work-item can show which MCP source snippets influenced output.
+  - [x] Acceptance Criteria: Default flow minimizes token usage via bounded retrieval, while manual enrichment can increase fidelity on demand; citations are available for generated items.
 
 - [ ] Epic: Add UI For Provider + MCP Configuration + Context Controls
   - [ ] Extend Settings modal in `App.tsx` with new tabs:

@@ -50,6 +50,27 @@ export interface McpGatewayTestResult {
   health: McpServerHealthState;
 }
 
+export interface McpGatewayContextQuery {
+  query: string;
+  intent?: string;
+  maxSnippets?: number;
+  maxSnippetChars?: number;
+  allowedResources?: string[];
+}
+
+export interface McpGatewayQueryResult {
+  serverId: string;
+  serverName: string;
+  transport: "http" | "command";
+  reachable: boolean;
+  latencyMs: number;
+  statusCode?: number;
+  errorCode?: string;
+  errorMessage?: string;
+  snippets: SanitizedMcpContextSnippet[];
+  health: McpServerHealthState;
+}
+
 export interface McpGatewayOptions {
   registryStore: McpRegistryStore;
   fetchImpl?: FetchLike;
@@ -75,8 +96,57 @@ interface BoundedReadResult {
   truncated: boolean;
 }
 
+interface ExtractedContextCandidate {
+  content: unknown;
+  resource?: string;
+}
+
 const DEFAULT_AUDIT_LOG_PATH = path.join(LOCAL_DATA_DIR, "mcp-audit.log");
 const JSON_CONTENT_TYPE_PATTERN = /application\/json/i;
+const DEFAULT_QUERY_MAX_SNIPPETS = 4;
+const DEFAULT_QUERY_MAX_CHARS = 1_200;
+const MAX_QUERY_MAX_SNIPPETS = 16;
+const MAX_QUERY_MAX_CHARS = 8_000;
+
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+};
+
+const readString = (value: unknown): string | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const clampInteger = (value: unknown, fallback: number, min: number, max: number): number => {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  const rounded = Math.round(parsed);
+  if (rounded < min) {
+    return min;
+  }
+  if (rounded > max) {
+    return max;
+  }
+
+  return rounded;
+};
 
 const parseIfJson = (raw: string, contentType: string | null): unknown => {
   if (raw.trim().length === 0) {
@@ -175,6 +245,36 @@ const keepWithinLimit = (current: Buffer, incoming: Buffer, limit: number): { ne
   }
 
   return { next: Buffer.concat([current, incoming.subarray(0, available)]), truncated: true };
+};
+
+const extractCandidateFromValue = (value: unknown): ExtractedContextCandidate | null => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return { content: value };
+  }
+
+  const resource =
+    readString(record.resource) ||
+    readString(record.uri) ||
+    readString(record.path) ||
+    readString(record.id);
+  const directContent =
+    record.content ??
+    record.text ??
+    record.snippet ??
+    record.payload ??
+    record.value ??
+    record.data;
+
+  if (directContent !== undefined) {
+    return { content: directContent, resource };
+  }
+
+  return { content: record, resource };
 };
 
 export class McpGateway {
@@ -381,7 +481,11 @@ export class McpGateway {
     };
   }
 
-  private async executeHttp(server: McpServerRecord, payload: unknown): Promise<HttpExecutionResult> {
+  private async executeHttp(
+    server: McpServerRecord,
+    requestType: string,
+    payload: unknown,
+  ): Promise<HttpExecutionResult> {
     const secrets = await this.registryStore.getSecretsForServer(server.id);
     const authHeaders = this.buildAuthHeaders(server.auth, secrets);
     const controller = new AbortController();
@@ -396,7 +500,7 @@ export class McpGateway {
           ...authHeaders,
         },
         body: JSON.stringify({
-          type: "mcp-probe",
+          type: requestType,
           payload,
         }),
         signal: controller.signal,
@@ -421,7 +525,11 @@ export class McpGateway {
     }
   }
 
-  private async executeCommand(server: McpServerRecord, payload: unknown): Promise<CommandExecutionResult> {
+  private async executeCommand(
+    server: McpServerRecord,
+    requestType: string,
+    payload: unknown,
+  ): Promise<CommandExecutionResult> {
     const tokens = parseCommandLine(server.endpointOrCommand);
     if (tokens.length === 0) {
       throw new Error("Command transport requires a non-empty endpointOrCommand.");
@@ -464,7 +572,7 @@ export class McpGateway {
     }, server.timeouts.requestMs);
 
     try {
-      const input = JSON.stringify({ type: "mcp-probe", payload });
+      const input = JSON.stringify({ type: requestType, payload });
       child.stdin.write(input);
       child.stdin.end();
 
@@ -562,8 +670,8 @@ export class McpGateway {
     try {
       const execution =
         server.transport === "http"
-          ? await this.executeHttp(server, probePayload)
-          : await this.executeCommand(server, probePayload);
+          ? await this.executeHttp(server, "mcp-probe", probePayload)
+          : await this.executeCommand(server, "mcp-probe", probePayload);
       const latencyMs = Math.max(1, this.now() - startedAt);
 
       this.recordSuccess(server, latencyMs);
@@ -626,6 +734,222 @@ export class McpGateway {
         latencyMs,
         errorCode: "MCP_TEST_FAILED",
         errorMessage,
+        health: this.getServerHealth(server),
+      };
+    }
+  }
+
+  private extractContextCandidates(content: unknown): ExtractedContextCandidate[] {
+    if (Array.isArray(content)) {
+      return content
+        .map(extractCandidateFromValue)
+        .filter((entry): entry is ExtractedContextCandidate => Boolean(entry));
+    }
+
+    const record = asRecord(content);
+    if (!record) {
+      const fallback = extractCandidateFromValue(content);
+      return fallback ? [fallback] : [];
+    }
+
+    const collectionKeys = ["snippets", "results", "items", "contexts", "documents"];
+    for (const key of collectionKeys) {
+      const maybeCollection = record[key];
+      if (Array.isArray(maybeCollection)) {
+        const mapped = maybeCollection
+          .map(extractCandidateFromValue)
+          .filter((entry): entry is ExtractedContextCandidate => Boolean(entry));
+        if (mapped.length > 0) {
+          return mapped;
+        }
+      }
+    }
+
+    const fallback = extractCandidateFromValue(record);
+    return fallback ? [fallback] : [];
+  }
+
+  public async queryServer(
+    serverId: string,
+    queryInput: McpGatewayContextQuery,
+  ): Promise<McpGatewayQueryResult> {
+    const server = await this.registryStore.getServerById(serverId);
+    if (!server) {
+      throw new HttpError(404, "MCP_SERVER_NOT_FOUND", `MCP server "${serverId}" was not found.`);
+    }
+
+    const maxSnippets = clampInteger(
+      queryInput.maxSnippets,
+      DEFAULT_QUERY_MAX_SNIPPETS,
+      1,
+      MAX_QUERY_MAX_SNIPPETS,
+    );
+    const maxSnippetChars = clampInteger(
+      queryInput.maxSnippetChars,
+      Math.min(DEFAULT_QUERY_MAX_CHARS, server.maxPayload),
+      80,
+      Math.min(MAX_QUERY_MAX_CHARS, server.maxPayload),
+    );
+    const query = typeof queryInput.query === "string" ? queryInput.query.trim() : "";
+    const allowedResources = Array.isArray(queryInput.allowedResources)
+      ? queryInput.allowedResources
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0)
+      : [];
+
+    if (!query) {
+      return {
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        reachable: false,
+        latencyMs: 1,
+        errorCode: "INVALID_REQUEST",
+        errorMessage: "Query text is required.",
+        snippets: [],
+        health: this.getServerHealth(server),
+      };
+    }
+
+    const startedAt = this.now();
+    const circuit = this.beginRequest(server);
+    if (circuit.blocked) {
+      const latencyMs = Math.max(1, this.now() - startedAt);
+      await this.appendAuditLog({
+        timestamp: new Date().toISOString(),
+        action: "query",
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        success: false,
+        blockedByCircuit: true,
+        retryAfterMs: circuit.retryAfterMs,
+      });
+
+      return {
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        reachable: false,
+        latencyMs,
+        errorCode: "MCP_CIRCUIT_OPEN",
+        errorMessage: `Circuit breaker open. Retry in ${circuit.retryAfterMs}ms.`,
+        snippets: [],
+        health: this.getServerHealth(server),
+      };
+    }
+
+    if (!server.enabled) {
+      const latencyMs = Math.max(1, this.now() - startedAt);
+      await this.appendAuditLog({
+        timestamp: new Date().toISOString(),
+        action: "query",
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        success: false,
+        reason: "server-disabled",
+      });
+
+      return {
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        reachable: false,
+        latencyMs,
+        errorCode: "MCP_SERVER_DISABLED",
+        errorMessage: "Server is disabled.",
+        snippets: [],
+        health: this.getServerHealth(server),
+      };
+    }
+
+    try {
+      const execution =
+        server.transport === "http"
+          ? await this.executeHttp(server, "mcp-context-query", {
+              query,
+              intent: queryInput.intent,
+              maxSnippets,
+              maxSnippetChars,
+              allowedResources: allowedResources.length > 0 ? allowedResources : server.allowedResources,
+            })
+          : await this.executeCommand(server, "mcp-context-query", {
+              query,
+              intent: queryInput.intent,
+              maxSnippets,
+              maxSnippetChars,
+              allowedResources: allowedResources.length > 0 ? allowedResources : server.allowedResources,
+            });
+      const latencyMs = Math.max(1, this.now() - startedAt);
+      this.recordSuccess(server, latencyMs);
+
+      const candidates = this.extractContextCandidates(execution.content).slice(0, maxSnippets);
+      const snippets = candidates
+        .map((candidate) => {
+          const snippet = sanitizeMcpContext(
+            {
+              source: {
+                serverId: server.id,
+                serverName: server.name,
+                ...(candidate.resource ? { resource: candidate.resource } : {}),
+              },
+              content: candidate.content,
+            },
+            maxSnippetChars,
+          );
+          snippet.truncated = snippet.truncated || execution.truncated;
+          return snippet;
+        })
+        .filter((snippet) => snippet.text.length > 0);
+
+      await this.appendAuditLog({
+        timestamp: new Date().toISOString(),
+        action: "query",
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        success: true,
+        latencyMs,
+        snippetCount: snippets.length,
+      });
+
+      return {
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        reachable: true,
+        latencyMs,
+        statusCode: "statusCode" in execution ? execution.statusCode : undefined,
+        snippets,
+        health: this.getServerHealth(server),
+      };
+    } catch (error) {
+      const latencyMs = Math.max(1, this.now() - startedAt);
+      const errorMessage = error instanceof Error ? error.message : "MCP context query failed.";
+      this.recordFailure(server, errorMessage);
+
+      await this.appendAuditLog({
+        timestamp: new Date().toISOString(),
+        action: "query",
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        success: false,
+        latencyMs,
+        errorCode: "MCP_QUERY_FAILED",
+      });
+
+      return {
+        serverId: server.id,
+        serverName: server.name,
+        transport: server.transport,
+        reachable: false,
+        latencyMs,
+        errorCode: "MCP_QUERY_FAILED",
+        errorMessage,
+        snippets: [],
         health: this.getServerHealth(server),
       };
     }

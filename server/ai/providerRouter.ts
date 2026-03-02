@@ -14,6 +14,15 @@ import { GeminiWriter } from "./geminiWriter.ts";
 import { AnthropicWriter } from "./anthropicWriter.ts";
 import { OpenAiWriter } from "./openAiWriter.ts";
 import type { ContextSourceInput, WorkItemInput } from "./types.ts";
+import { McpRegistryStore } from "../mcp/registryStore.ts";
+import { McpGateway } from "../mcp/gateway.ts";
+import { McpRetrievalCache } from "../mcp/retrievalCache.ts";
+import {
+  ContextRetrievalStrategy,
+  assessAnalysisConfidence,
+  attachToolCallContextMetadata,
+  type ContextPolicyInput,
+} from "./contextRetrievalStrategy.ts";
 
 export interface AiRuntimeConfig {
   providers: {
@@ -140,6 +149,15 @@ const withProviderOverride =
 export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
   const router = Router();
   const writerRegistry = buildWriterRegistry(runtimeConfig);
+  const mcpRegistryStore = new McpRegistryStore();
+  const mcpGateway = new McpGateway({ registryStore: mcpRegistryStore });
+  const mcpRetrievalCache = new McpRetrievalCache();
+  const contextRetrieval = new ContextRetrievalStrategy({
+    featureEnabled: runtimeConfig.featureFlags.ENABLE_MCP_CONTEXT,
+    registryStore: mcpRegistryStore,
+    gateway: mcpGateway,
+    cache: mcpRetrievalCache,
+  });
 
   const summarizeHandler: RouteHandler = async (req, res, next) => {
     try {
@@ -164,6 +182,10 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
       const contextSources = Array.isArray(req.body?.contextSources)
         ? (req.body.contextSources as ContextSourceInput[])
         : [];
+      const contextPolicyInput =
+        req.body?.contextPolicy && typeof req.body.contextPolicy === "object"
+          ? (req.body.contextPolicy as ContextPolicyInput)
+          : undefined;
 
       if (!transcript.trim()) {
         throw new HttpError(400, "INVALID_REQUEST", "Field \"transcript\" is required.");
@@ -171,11 +193,79 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
 
       const providerId = readRequestedWriterProvider(req);
       const provider = requireWriterProvider(writerRegistry, providerId);
-      const toolCalls = await provider.analyzeMeetingTranscript(
+      const firstRetrieval = await contextRetrieval.prepare(
         transcript,
         projectContext,
-        contextSources,
+        contextPolicyInput,
+      );
+      const firstPassContext = [...contextSources, ...firstRetrieval.retrievedSources];
+      const firstToolCalls = await provider.analyzeMeetingTranscript(
+        transcript,
+        projectContext,
+        firstPassContext,
         req.body?.providerConfig,
+      );
+      const firstConfidence = assessAnalysisConfidence(firstToolCalls, transcript);
+      let confidence = firstConfidence;
+      let selectedToolCalls = firstToolCalls;
+      let selectedRetrieval = firstRetrieval;
+      let escalationAttempted = false;
+      let escalationUsed = false;
+
+      const shouldEscalate =
+        runtimeConfig.featureFlags.ENABLE_MCP_CONTEXT &&
+        firstRetrieval.trace.policy.mode === "auto-smart" &&
+        confidence.isLowConfidence;
+
+      if (shouldEscalate) {
+        escalationAttempted = true;
+        const expandedPolicy = {
+          ...(contextPolicyInput || {}),
+          mode: "manual-enrich" as const,
+          globalTokenBudget: Math.min(6_000, firstRetrieval.trace.policy.globalTokenBudget * 2),
+          perServerTokenBudget: Math.min(3_000, firstRetrieval.trace.policy.perServerTokenBudget * 2),
+          maxSnippetCount: Math.min(20, firstRetrieval.trace.policy.maxSnippetCount + 4),
+          maxSnippetChars: Math.min(8_000, firstRetrieval.trace.policy.maxSnippetChars + 800),
+        };
+        const secondRetrieval = await contextRetrieval.prepare(
+          transcript,
+          projectContext,
+          expandedPolicy,
+        );
+        const secondPassContext = [...contextSources, ...secondRetrieval.retrievedSources];
+        const secondToolCalls = await provider.analyzeMeetingTranscript(
+          transcript,
+          projectContext,
+          secondPassContext,
+          req.body?.providerConfig,
+        );
+        const secondConfidence = assessAnalysisConfidence(secondToolCalls, transcript);
+
+        if (
+          secondConfidence.score > confidence.score ||
+          (selectedToolCalls.length === 0 && secondToolCalls.length > 0)
+        ) {
+          escalationUsed = true;
+          selectedToolCalls = secondToolCalls;
+          selectedRetrieval = secondRetrieval;
+          confidence = secondConfidence;
+        }
+      }
+
+      const retrievalTrace = {
+        ...selectedRetrieval.trace,
+        escalation: {
+          attempted: escalationAttempted,
+          used: escalationUsed,
+          baseConfidence: Number(firstConfidence.score.toFixed(3)),
+          finalConfidence: Number(confidence.score.toFixed(3)),
+        },
+      };
+      const toolCalls = attachToolCallContextMetadata(
+        selectedToolCalls,
+        selectedRetrieval.citations,
+        retrievalTrace,
+        confidence,
       );
       sendSuccess(res, { provider: provider.id, toolCalls });
     } catch (error) {
