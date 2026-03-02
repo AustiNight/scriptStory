@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "bash ./scripts/dev.sh",
+    "dev:client": "vite",
+    "dev:server": "node --experimental-strip-types --watch server/index.ts",
     "check:guardrails": "bash ./scripts/check-guardrails.sh",
     "check": "npm run check:guardrails",
     "verify": "npm run check && npm run build",
@@ -13,12 +15,14 @@
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
+    "express": "^5.1.0",
     "react-dom": "^19.2.0",
     "react": "^19.2.0",
     "uuid": "^13.0.0",
     "mammoth": "1.8.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.5",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",

@@ -454,11 +454,18 @@ export default function App() {
 
   useEffect(() => {
     const manage = async () => {
-        if (isCommanding) {
-            if (activeSessionType !== 'COMMANDER') { await geminiLive.disconnect(); await geminiLive.connect('COMMANDER'); geminiLive.setMute(false); setActiveSessionType('COMMANDER'); }
-        } else if (isMeetingRunning) {
-            if (activeSessionType !== 'SCRIBE') { await geminiLive.disconnect(); await geminiLive.connect('SCRIBE'); geminiLive.setMute(false); setActiveSessionType('SCRIBE'); }
-        } else if (activeSessionType) { await geminiLive.disconnect(); setActiveSessionType(null); }
+        try {
+            if (isCommanding) {
+                if (activeSessionType !== 'COMMANDER') { await geminiLive.disconnect(); await geminiLive.connect('COMMANDER'); geminiLive.setMute(false); setActiveSessionType('COMMANDER'); }
+            } else if (isMeetingRunning) {
+                if (activeSessionType !== 'SCRIBE') { await geminiLive.disconnect(); await geminiLive.connect('SCRIBE'); geminiLive.setMute(false); setActiveSessionType('SCRIBE'); }
+            } else if (activeSessionType) { await geminiLive.disconnect(); setActiveSessionType(null); }
+        } catch (e: any) {
+            setError(e.message || 'Unable to start live session.');
+            setIsCommanding(false);
+            setIsMeetingRunning(false);
+            setActiveSessionType(null);
+        }
     };
     manage();
   }, [isCommanding, isMeetingRunning]); 

@@ -24,14 +24,14 @@
   - [x] Add `npm run check:guardrails` in `package.json` and wire into local verification flow.
   - [x] Acceptance Criteria: Guardrails are documented, scriptable, and enforced before merge; deferred scope artifacts are blocked.
 
-- [ ] Epic: Create Local API Runtime For Provider + MCP Orchestration
-  - [ ] Create `server/` TypeScript runtime (Node + Express/Fastify) and add scripts for `dev:server` and combined `dev` workflow.
-  - [ ] Configure Vite proxy so browser calls `/api/*` locally without CORS breakage.
-  - [ ] Add health endpoint (`GET /api/health`) and structured error envelope for all API responses.
-  - [ ] Bind server to loopback-only (`127.0.0.1`) by default for single-user local MVP.
-  - [ ] Add secure environment loading for provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, existing Gemini key fallback) from local env files.
-  - [ ] Add local persistence folder `.local-data/` (gitignored) for single-user config payloads (MCP registry, defaults, cache metadata).
-  - [ ] Acceptance Criteria: App runs locally with frontend + backend together; no provider secret is read directly by browser code.
+- [x] Epic: Create Local API Runtime For Provider + MCP Orchestration
+  - [x] Create `server/` TypeScript runtime (Node + Express/Fastify) and add scripts for `dev:server` and combined `dev` workflow.
+  - [x] Configure Vite proxy so browser calls `/api/*` locally without CORS breakage.
+  - [x] Add health endpoint (`GET /api/health`) and structured error envelope for all API responses.
+  - [x] Bind server to loopback-only (`127.0.0.1`) by default for single-user local MVP.
+  - [x] Add secure environment loading for provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, existing Gemini key fallback) from local env files.
+  - [x] Add local persistence folder `.local-data/` (gitignored) for single-user config payloads (MCP registry, defaults, cache metadata).
+  - [x] Acceptance Criteria: App runs locally with frontend + backend together; no provider secret is read directly by browser code.
 
 - [ ] Epic: Introduce AI Provider Abstraction (Frontend + Backend)
   - [ ] Define provider contracts:
