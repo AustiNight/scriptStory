@@ -44,15 +44,15 @@
   - [x] Add provider selection model in app state/local storage with safe defaults (`Gemini` for transcription, configurable writer provider).
   - [x] Acceptance Criteria: Existing workflows still function after abstraction; provider can be swapped by config instead of hard-coded imports.
 
-- [ ] Epic: Add OpenAI Provider Adapter
-  - [ ] Implement backend OpenAI adapter for writer operations:
+- [x] Epic: Add OpenAI Provider Adapter
+  - [x] Implement backend OpenAI adapter for writer operations:
     - Transcript summarization.
     - Transcript analysis into tool invocations (`createWorkItem`, `updateWorkItem`, `deleteWorkItem`, etc.).
-  - [ ] Implement streaming/tool-call handling and schema validation so tool arguments match existing `types.ts` contracts.
-  - [ ] Add retry/backoff and model fallback strategy for transient OpenAI failures.
-  - [ ] Add provider-specific config fields in settings (model IDs, temperature, max output tokens).
-  - [ ] Add integration tests with fixed transcript fixtures validating quality and deterministic tool-call extraction shape.
-  - [ ] Acceptance Criteria: User can choose OpenAI writer provider and produce valid work-item outputs equivalent to Gemini baseline quality.
+  - [x] Implement streaming/tool-call handling and schema validation so tool arguments match existing `types.ts` contracts.
+  - [x] Add retry/backoff and model fallback strategy for transient OpenAI failures.
+  - [x] Add provider-specific config fields in settings (model IDs, temperature, max output tokens).
+  - [x] Add integration tests with fixed transcript fixtures validating quality and deterministic tool-call extraction shape.
+  - [x] Acceptance Criteria: User can choose OpenAI writer provider and produce valid work-item outputs equivalent to Gemini baseline quality.
 
 - [ ] Epic: Add Anthropic Provider Adapter
   - [ ] Implement backend Anthropic adapter for writer operations:

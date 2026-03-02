@@ -26,17 +26,19 @@ export interface WriterProvider<
 > {
   readonly id: WriterProviderId;
   readonly capabilities: ProviderCapabilities;
-  summarizeTranscript(transcript: string): Promise<string>;
+  summarizeTranscript(transcript: string, providerConfig?: unknown): Promise<string>;
   analyzeMeetingTranscript(
     transcript: string,
     projectContext: string,
     contextSources: TContextSource[],
+    providerConfig?: unknown,
   ): Promise<TToolCall[]>;
   refineFieldContent(
     rawTranscript: string,
     fieldName: string,
     currentItem: TWorkItem,
     projectContext: string,
+    providerConfig?: unknown,
   ): Promise<string>;
   startCommandSession?(sessionType: SessionType): Promise<void>;
 }

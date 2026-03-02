@@ -8,6 +8,12 @@ import {
   type WriterProvider,
   type WriterProviderId,
 } from "../config/providerContracts";
+import {
+  DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG,
+  getWriterProviderRuntimeConfig,
+  sanitizeWriterProviderRuntimeConfig,
+  type WriterProviderRuntimeConfig,
+} from "../config/providerRuntimeConfig";
 import { ContextSource, WorkItem } from "../types";
 
 type ToolHandler = (name: string, args: any) => Promise<any>;
@@ -36,14 +42,17 @@ class ApiWriterProviderAdapter
   public readonly id: WriterProviderId;
   public readonly capabilities: (typeof PROVIDER_CAPABILITY_MATRIX)[WriterProviderId];
   private readonly post: <T>(path: string, payload: unknown) => Promise<T>;
+  private readonly getProviderConfig: (providerId: WriterProviderId) => unknown;
 
   constructor(
     id: WriterProviderId,
     post: <T>(path: string, payload: unknown) => Promise<T>,
+    getProviderConfig: (providerId: WriterProviderId) => unknown,
   ) {
     this.id = id;
     this.capabilities = PROVIDER_CAPABILITY_MATRIX[id];
     this.post = post;
+    this.getProviderConfig = getProviderConfig;
   }
 
   public async summarizeTranscript(transcript: string): Promise<string> {
@@ -52,6 +61,7 @@ class ApiWriterProviderAdapter
       {
         provider: this.id,
         transcript,
+        providerConfig: this.getProviderConfig(this.id),
       },
     );
     return data.summary;
@@ -73,6 +83,7 @@ class ApiWriterProviderAdapter
         transcript,
         projectContext,
         contextSources,
+        providerConfig: this.getProviderConfig(this.id),
       },
     );
 
@@ -93,6 +104,7 @@ class ApiWriterProviderAdapter
         fieldName,
         currentItem,
         projectContext,
+        providerConfig: this.getProviderConfig(this.id),
       },
     );
 
@@ -127,6 +139,9 @@ export class GeminiLiveService {
   private providerSelection: ProviderSelection = {
     ...DEFAULT_PROVIDER_SELECTION,
   };
+  private writerProviderRuntimeConfig: WriterProviderRuntimeConfig = {
+    ...DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG,
+  };
   private readonly writerProviders: Record<WriterProviderId, ApiWriterProviderAdapter>;
   private readonly transcriptionProviders: Record<
     ProviderSelection["transcription"],
@@ -135,9 +150,21 @@ export class GeminiLiveService {
 
   constructor() {
     this.writerProviders = {
-      gemini: new ApiWriterProviderAdapter("gemini", this.post.bind(this)),
-      openai: new ApiWriterProviderAdapter("openai", this.post.bind(this)),
-      anthropic: new ApiWriterProviderAdapter("anthropic", this.post.bind(this)),
+      gemini: new ApiWriterProviderAdapter(
+        "gemini",
+        this.post.bind(this),
+        this.getWriterProviderConfig.bind(this),
+      ),
+      openai: new ApiWriterProviderAdapter(
+        "openai",
+        this.post.bind(this),
+        this.getWriterProviderConfig.bind(this),
+      ),
+      anthropic: new ApiWriterProviderAdapter(
+        "anthropic",
+        this.post.bind(this),
+        this.getWriterProviderConfig.bind(this),
+      ),
     };
 
     this.transcriptionProviders = {
@@ -158,6 +185,14 @@ export class GeminiLiveService {
   public setProviderSelection(selection: unknown) {
     this.providerSelection = sanitizeProviderSelection(selection);
     this.getSelectedTranscriptionProvider().setMute(this.isMuted);
+  }
+
+  public setWriterProviderRuntimeConfig(config: unknown) {
+    this.writerProviderRuntimeConfig = sanitizeWriterProviderRuntimeConfig(config);
+  }
+
+  public getWriterProviderRuntimeConfig(): WriterProviderRuntimeConfig {
+    return { ...this.writerProviderRuntimeConfig };
   }
 
   public getProviderSelection(): ProviderSelection {
@@ -237,6 +272,10 @@ export class GeminiLiveService {
   public async disconnect() {
     await this.getSelectedTranscriptionProvider().disconnect();
     this.isMuted = true;
+  }
+
+  private getWriterProviderConfig(providerId: WriterProviderId): unknown {
+    return getWriterProviderRuntimeConfig(this.writerProviderRuntimeConfig, providerId);
   }
 }
 

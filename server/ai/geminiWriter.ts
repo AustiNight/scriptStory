@@ -7,21 +7,7 @@ import {
   PROVIDER_CAPABILITY_MATRIX,
   type WriterProvider,
 } from "../../config/providerContracts.ts";
-
-export interface ContextSourceInput {
-  id?: string;
-  name: string;
-  type: "FILE" | "PASTE";
-  content: string;
-  mimeType?: string;
-  enabled?: boolean;
-}
-
-interface WorkItemInput {
-  type: string;
-  title: string;
-  description: string;
-}
+import type { ContextSourceInput, WorkItemInput } from "./types.ts";
 
 const createWorkItemFunc: FunctionDeclaration = {
   name: "createWorkItem",
@@ -193,7 +179,7 @@ export class GeminiWriter
     this.ai = new GoogleGenAI({ apiKey });
   }
 
-  public async summarizeTranscript(transcript: string): Promise<string> {
+  public async summarizeTranscript(transcript: string, _providerConfig?: unknown): Promise<string> {
     const prompt = `
       Summarize the following meeting transcript into 1 or 2 concise sentences.
       Focus on the key work items discussed or decisions made.
@@ -213,6 +199,7 @@ export class GeminiWriter
     transcript: string,
     projectContext: string,
     contextSources: ContextSourceInput[],
+    _providerConfig?: unknown,
   ): Promise<any[]> {
     if (!transcript.trim()) {
       return [];
@@ -321,6 +308,7 @@ export class GeminiWriter
     fieldName: string,
     currentItem: WorkItemInput,
     projectContext: string,
+    _providerConfig?: unknown,
   ): Promise<string> {
     const prompt = `
       Refine this field content. Field: ${fieldName}. Item: ${currentItem.type}.

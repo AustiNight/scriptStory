@@ -10,13 +10,9 @@ import {
 } from "../../config/providerContracts.ts";
 import { sendSuccess } from "../http/envelope.ts";
 import { HttpError } from "../http/errors.ts";
-import { GeminiWriter, type ContextSourceInput } from "./geminiWriter.ts";
-
-interface WorkItemInput {
-  type: string;
-  title: string;
-  description: string;
-}
+import { GeminiWriter } from "./geminiWriter.ts";
+import { OpenAiWriter } from "./openAiWriter.ts";
+import type { ContextSourceInput, WorkItemInput } from "./types.ts";
 
 export interface AiRuntimeConfig {
   providers: {
@@ -51,10 +47,12 @@ const buildWriterRegistry = (
   },
   openai: {
     id: "openai",
-    adapter: null,
+    adapter: runtimeConfig.providers.openaiApiKey
+      ? new OpenAiWriter(runtimeConfig.providers.openaiApiKey)
+      : null,
     enabled: runtimeConfig.featureFlags.ENABLE_OPENAI_WRITER,
     configured: Boolean(runtimeConfig.providers.openaiApiKey),
-    implemented: false,
+    implemented: true,
     requiredEnv: "OPENAI_API_KEY",
   },
   anthropic: {
@@ -149,7 +147,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
 
       const providerId = readRequestedWriterProvider(req);
       const provider = requireWriterProvider(writerRegistry, providerId);
-      const summary = await provider.summarizeTranscript(transcript);
+      const summary = await provider.summarizeTranscript(transcript, req.body?.providerConfig);
       sendSuccess(res, { provider: provider.id, summary });
     } catch (error) {
       next(error);
@@ -170,7 +168,12 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
 
       const providerId = readRequestedWriterProvider(req);
       const provider = requireWriterProvider(writerRegistry, providerId);
-      const toolCalls = await provider.analyzeMeetingTranscript(transcript, projectContext, contextSources);
+      const toolCalls = await provider.analyzeMeetingTranscript(
+        transcript,
+        projectContext,
+        contextSources,
+        req.body?.providerConfig,
+      );
       sendSuccess(res, { provider: provider.id, toolCalls });
     } catch (error) {
       next(error);
@@ -203,6 +206,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
         fieldName,
         currentItem,
         projectContext,
+        req.body?.providerConfig,
       );
       sendSuccess(res, { provider: provider.id, refinedText });
     } catch (error) {
