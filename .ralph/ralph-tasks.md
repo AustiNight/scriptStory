@@ -33,16 +33,16 @@
   - [x] Add local persistence folder `.local-data/` (gitignored) for single-user config payloads (MCP registry, defaults, cache metadata).
   - [x] Acceptance Criteria: App runs locally with frontend + backend together; no provider secret is read directly by browser code.
 
-- [ ] Epic: Introduce AI Provider Abstraction (Frontend + Backend)
-  - [ ] Define provider contracts:
+- [x] Epic: Introduce AI Provider Abstraction (Frontend + Backend)
+  - [x] Define provider contracts:
     - `WriterProvider`: summarize transcript, analyze transcript into tool calls, optional command session.
     - `TranscriptionProvider`: realtime/near-realtime transcript capture capabilities.
-  - [ ] Add provider capability matrix (realtime audio, streaming text, tool-call support, strict JSON mode).
-  - [ ] Refactor current Gemini logic in `services/geminiLiveService.ts` behind adapter interfaces without changing output behavior.
-  - [ ] Add backend provider router (`/api/ai/*`) that dispatches to selected provider adapter.
-  - [ ] Add feature flags for incremental rollout (`ENABLE_OPENAI_WRITER`, `ENABLE_ANTHROPIC_WRITER`, `ENABLE_MCP_CONTEXT`) with safe defaults.
-  - [ ] Add provider selection model in app state/local storage with safe defaults (`Gemini` for transcription, configurable writer provider).
-  - [ ] Acceptance Criteria: Existing workflows still function after abstraction; provider can be swapped by config instead of hard-coded imports.
+  - [x] Add provider capability matrix (realtime audio, streaming text, tool-call support, strict JSON mode).
+  - [x] Refactor current Gemini logic in `services/geminiLiveService.ts` behind adapter interfaces without changing output behavior.
+  - [x] Add backend provider router (`/api/ai/*`) that dispatches to selected provider adapter.
+  - [x] Add feature flags for incremental rollout (`ENABLE_OPENAI_WRITER`, `ENABLE_ANTHROPIC_WRITER`, `ENABLE_MCP_CONTEXT`) with safe defaults.
+  - [x] Add provider selection model in app state/local storage with safe defaults (`Gemini` for transcription, configurable writer provider).
+  - [x] Acceptance Criteria: Existing workflows still function after abstraction; provider can be swapped by config instead of hard-coded imports.
 
 - [ ] Epic: Add OpenAI Provider Adapter
   - [ ] Implement backend OpenAI adapter for writer operations:

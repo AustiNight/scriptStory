@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { WorkItem, WorkItemType, Priority, Risk, CreateWorkItemArgs, UpdateWorkItemArgs, AppMode, SavedTranscript, ADOConfig, FilterState, FilterArgs, VisualArgs, DeleteArgs, SwitchModeArgs, FIBONACCI_SEQUENCE, SearchMode, PushedItemLog, ContextSource } from './types';
 import { geminiLive, SessionType } from './services/geminiLiveService';
+import { DEFAULT_PROVIDER_SELECTION, sanitizeProviderSelection, type ProviderSelection, type WriterProviderId } from './config/providerContracts';
 import { pushToADO } from './services/adoService';
 import { parseDocument } from './services/documentUtils';
 import Visualizer from './components/Visualizer';
@@ -112,6 +113,15 @@ export default function App() {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'ADO' | 'KNOWLEDGE'>('ADO');
+  const [providerSelection, setProviderSelection] = useState<ProviderSelection>(() => {
+      try {
+          const saved = localStorage.getItem('semantic_lens_provider_selection');
+          if (!saved) return { ...DEFAULT_PROVIDER_SELECTION };
+          return sanitizeProviderSelection(JSON.parse(saved));
+      } catch {
+          return { ...DEFAULT_PROVIDER_SELECTION };
+      }
+  });
   const [newSourceText, setNewSourceText] = useState('');
   const [newSourceTitle, setNewSourceTitle] = useState('');
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -154,6 +164,10 @@ export default function App() {
       localStorage.setItem('semantic_lens_context_sources', JSON.stringify(contextSources));
       contextSourcesRef.current = contextSources;
   }, [contextSources]);
+  useEffect(() => {
+      localStorage.setItem('semantic_lens_provider_selection', JSON.stringify(providerSelection));
+      geminiLive.setProviderSelection(providerSelection);
+  }, [providerSelection]);
 
   // -- Helper: Search Logic --
   const checkMatch = useCallback((text: string | undefined, query: string, mode: SearchMode): boolean => {
@@ -403,6 +417,10 @@ export default function App() {
       setNewSourceText(''); setNewSourceTitle('');
   };
 
+  const handleWriterProviderChange = (writer: WriterProviderId) => {
+      setProviderSelection(prev => sanitizeProviderSelection({ ...prev, writer }));
+  };
+
   const latestRef = useRef({ createWorkItem, updateWorkItem, deleteWorkItem, navigateFocus, handleFilter, handleVisuals, handleSwitchMode, isMeetingRunning, isCommanding, focusedItemId });
   useEffect(() => { latestRef.current = { createWorkItem, updateWorkItem, deleteWorkItem, navigateFocus, handleFilter, handleVisuals, handleSwitchMode, isMeetingRunning, isCommanding, focusedItemId }; }, [createWorkItem, updateWorkItem, deleteWorkItem, navigateFocus, handleFilter, handleVisuals, handleSwitchMode, isMeetingRunning, isCommanding, focusedItemId]);
 
@@ -560,6 +578,21 @@ export default function App() {
                               <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Org" value={adoConfig.organization} onChange={e => setAdoConfig({...adoConfig, organization: e.target.value})} />
                               <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Project" value={adoConfig.project} onChange={e => setAdoConfig({...adoConfig, project: e.target.value})} />
                               <input type="password" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="PAT" value={adoConfig.pat} onChange={e => setAdoConfig({...adoConfig, pat: e.target.value})} />
+                              <div className="pt-4 border-t border-white/10">
+                                  <label className="block text-xs font-mono uppercase tracking-wider text-slate-400 mb-2">Writer Provider</label>
+                                  <select
+                                      className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                      value={providerSelection.writer}
+                                      onChange={e => handleWriterProviderChange(e.target.value as WriterProviderId)}
+                                  >
+                                      <option value="gemini">Gemini (default)</option>
+                                      <option value="openai">OpenAI (feature-flagged)</option>
+                                      <option value="anthropic">Anthropic (feature-flagged)</option>
+                                  </select>
+                                  <p className="text-[11px] text-slate-500 mt-2">
+                                      Transcription provider remains Gemini for this milestone runtime.
+                                  </p>
+                              </div>
                           </div>
                       )}
                       {settingsTab === 'KNOWLEDGE' && (

@@ -3,6 +3,10 @@ import {
   Type,
 } from "@google/genai";
 import type { FunctionDeclaration, Tool } from "@google/genai";
+import {
+  PROVIDER_CAPABILITY_MATRIX,
+  type WriterProvider,
+} from "../../config/providerContracts.ts";
 
 export interface ContextSourceInput {
   id?: string;
@@ -178,8 +182,12 @@ const isTextSource = (source: ContextSourceInput): boolean =>
 const isImageSource = (source: ContextSourceInput): boolean =>
   Boolean(source.mimeType && source.mimeType.startsWith("image/"));
 
-export class GeminiWriter {
+export class GeminiWriter
+  implements WriterProvider<ContextSourceInput, WorkItemInput, any>
+{
   private readonly ai: GoogleGenAI;
+  public readonly id = "gemini" as const;
+  public readonly capabilities = PROVIDER_CAPABILITY_MATRIX.gemini;
 
   constructor(apiKey: string) {
     this.ai = new GoogleGenAI({ apiKey });

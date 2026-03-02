@@ -1,9 +1,19 @@
+import {
+  DEFAULT_PROVIDER_SELECTION,
+  PROVIDER_CAPABILITY_MATRIX,
+  sanitizeProviderSelection,
+  type ProviderSelection,
+  type SessionType as SharedSessionType,
+  type TranscriptionProvider,
+  type WriterProvider,
+  type WriterProviderId,
+} from "../config/providerContracts";
 import { ContextSource, WorkItem } from "../types";
 
 type ToolHandler = (name: string, args: any) => Promise<any>;
 type TranscriptHandler = (text: string, isUser: boolean) => void;
 
-export type SessionType = "SCRIBE" | "COMMANDER";
+export type SessionType = SharedSessionType;
 
 interface ApiSuccessEnvelope<T> {
   ok: true;
@@ -20,10 +30,120 @@ interface ApiErrorEnvelope {
 
 type ApiEnvelope<T> = ApiSuccessEnvelope<T> | ApiErrorEnvelope;
 
+class ApiWriterProviderAdapter
+  implements WriterProvider<ContextSource, WorkItem, any>
+{
+  public readonly id: WriterProviderId;
+  public readonly capabilities: (typeof PROVIDER_CAPABILITY_MATRIX)[WriterProviderId];
+  private readonly post: <T>(path: string, payload: unknown) => Promise<T>;
+
+  constructor(
+    id: WriterProviderId,
+    post: <T>(path: string, payload: unknown) => Promise<T>,
+  ) {
+    this.id = id;
+    this.capabilities = PROVIDER_CAPABILITY_MATRIX[id];
+    this.post = post;
+  }
+
+  public async summarizeTranscript(transcript: string): Promise<string> {
+    const data = await this.post<{ summary: string }>(
+      "/api/ai/summarize",
+      {
+        provider: this.id,
+        transcript,
+      },
+    );
+    return data.summary;
+  }
+
+  public async analyzeMeetingTranscript(
+    transcript: string,
+    projectContext: string,
+    contextSources: ContextSource[],
+  ): Promise<any[]> {
+    if (!transcript.trim()) {
+      return [];
+    }
+
+    const data = await this.post<{ toolCalls: any[] }>(
+      "/api/ai/analyze",
+      {
+        provider: this.id,
+        transcript,
+        projectContext,
+        contextSources,
+      },
+    );
+
+    return data.toolCalls || [];
+  }
+
+  public async refineFieldContent(
+    rawTranscript: string,
+    fieldName: string,
+    currentItem: WorkItem,
+    projectContext: string,
+  ): Promise<string> {
+    const data = await this.post<{ refinedText: string }>(
+      "/api/ai/refine",
+      {
+        provider: this.id,
+        rawTranscript,
+        fieldName,
+        currentItem,
+        projectContext,
+      },
+    );
+
+    return data.refinedText;
+  }
+}
+
+class GeminiTranscriptionProviderAdapter implements TranscriptionProvider {
+  public readonly id = "gemini" as const;
+  public readonly capabilities = PROVIDER_CAPABILITY_MATRIX.gemini;
+  private isMuted = true;
+
+  public setMute(muted: boolean) {
+    this.isMuted = muted;
+  }
+
+  public async connect(_: SharedSessionType) {
+    throw new Error(
+      "Real-time Gemini Live sessions are not available in the local API runtime yet. Use transcript import or wait for provider runtime completion.",
+    );
+  }
+
+  public async disconnect() {
+    this.isMuted = true;
+  }
+}
+
 export class GeminiLiveService {
   private onToolCall: ToolHandler | null = null;
   private onTranscript: TranscriptHandler | null = null;
   private isMuted = true;
+  private providerSelection: ProviderSelection = {
+    ...DEFAULT_PROVIDER_SELECTION,
+  };
+  private readonly writerProviders: Record<WriterProviderId, ApiWriterProviderAdapter>;
+  private readonly transcriptionProviders: Record<
+    ProviderSelection["transcription"],
+    TranscriptionProvider
+  >;
+
+  constructor() {
+    this.writerProviders = {
+      gemini: new ApiWriterProviderAdapter("gemini", this.post.bind(this)),
+      openai: new ApiWriterProviderAdapter("openai", this.post.bind(this)),
+      anthropic: new ApiWriterProviderAdapter("anthropic", this.post.bind(this)),
+    };
+
+    this.transcriptionProviders = {
+      gemini: new GeminiTranscriptionProviderAdapter(),
+    };
+  }
 
   public setHandlers(onToolCall: ToolHandler, onTranscript: TranscriptHandler) {
     this.onToolCall = onToolCall;
@@ -32,6 +152,20 @@ export class GeminiLiveService {
 
   public setMute(muted: boolean) {
     this.isMuted = muted;
+    this.getSelectedTranscriptionProvider().setMute(muted);
+  }
+
+  public setProviderSelection(selection: unknown) {
+    this.providerSelection = sanitizeProviderSelection(selection);
+    this.getSelectedTranscriptionProvider().setMute(this.isMuted);
+  }
+
+  public getProviderSelection(): ProviderSelection {
+    return { ...this.providerSelection };
+  }
+
+  public getProviderCapabilities() {
+    return PROVIDER_CAPABILITY_MATRIX;
   }
 
   private async post<T>(path: string, payload: unknown): Promise<T> {
@@ -57,8 +191,7 @@ export class GeminiLiveService {
   }
 
   public async summarizeTranscript(transcript: string): Promise<string> {
-    const data = await this.post<{ summary: string }>("/api/ai/gemini/summarize", { transcript });
-    return data.summary;
+    return this.getSelectedWriterProvider().summarizeTranscript(transcript);
   }
 
   public async analyzeMeetingTranscript(
@@ -66,17 +199,11 @@ export class GeminiLiveService {
     projectContext: string,
     contextSources: ContextSource[],
   ): Promise<any[]> {
-    if (!transcript.trim()) {
-      return [];
-    }
-
-    const data = await this.post<{ toolCalls: any[] }>("/api/ai/gemini/analyze", {
+    return this.getSelectedWriterProvider().analyzeMeetingTranscript(
       transcript,
       projectContext,
       contextSources,
-    });
-
-    return data.toolCalls || [];
+    );
   }
 
   public async refineFieldContent(
@@ -85,23 +212,30 @@ export class GeminiLiveService {
     currentItem: WorkItem,
     projectContext: string,
   ): Promise<string> {
-    const data = await this.post<{ refinedText: string }>("/api/ai/gemini/refine", {
+    return this.getSelectedWriterProvider().refineFieldContent(
       rawTranscript,
       fieldName,
       currentItem,
       projectContext,
-    });
-
-    return data.refinedText;
-  }
-
-  public async connect(_: SessionType) {
-    throw new Error(
-      "Real-time Gemini Live sessions are not available in the local API runtime yet. Use transcript import or wait for provider runtime completion.",
     );
   }
 
+  private getSelectedWriterProvider(): ApiWriterProviderAdapter {
+    const selected = this.writerProviders[this.providerSelection.writer];
+    return selected || this.writerProviders[DEFAULT_PROVIDER_SELECTION.writer];
+  }
+
+  private getSelectedTranscriptionProvider(): TranscriptionProvider {
+    const selected = this.transcriptionProviders[this.providerSelection.transcription];
+    return selected || this.transcriptionProviders[DEFAULT_PROVIDER_SELECTION.transcription];
+  }
+
+  public async connect(sessionType: SessionType) {
+    await this.getSelectedTranscriptionProvider().connect(sessionType);
+  }
+
   public async disconnect() {
+    await this.getSelectedTranscriptionProvider().disconnect();
     this.isMuted = true;
   }
 }

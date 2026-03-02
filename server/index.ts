@@ -1,7 +1,8 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { randomUUID } from "node:crypto";
-import { GeminiWriter } from "./ai/geminiWriter.ts";
+import { readFeatureFlags } from "../config/featureFlags.ts";
+import { createAiRouter } from "./ai/providerRouter.ts";
 import { loadLocalEnv } from "./config/loadLocalEnv.ts";
 import { bootstrapLocalData } from "./localData/bootstrap.ts";
 import { sendError, sendSuccess } from "./http/envelope.ts";
@@ -18,28 +19,12 @@ const runtimeConfig = {
   host: process.env.API_HOST?.trim() || "127.0.0.1",
   port: parsePort(process.env.API_PORT, 4010),
   jsonPayloadLimit: process.env.API_JSON_LIMIT?.trim() || "2mb",
+  featureFlags: readFeatureFlags(process.env),
   providers: {
     geminiApiKey: process.env.GEMINI_API_KEY?.trim() || "",
     openaiApiKey: process.env.OPENAI_API_KEY?.trim() || "",
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() || "",
   },
-};
-
-const geminiWriter = runtimeConfig.providers.geminiApiKey
-  ? new GeminiWriter(runtimeConfig.providers.geminiApiKey)
-  : null;
-
-const requireGeminiWriter = (): GeminiWriter => {
-  if (!geminiWriter) {
-    throw new HttpError(
-      503,
-      "PROVIDER_NOT_CONFIGURED",
-      "Gemini provider key is not configured on the server.",
-      { missingEnv: "GEMINI_API_KEY" },
-    );
-  }
-
-  return geminiWriter;
 };
 
 const app = express();
@@ -63,82 +48,12 @@ app.get("/api/health", (_, res) => {
       openaiConfigured: Boolean(runtimeConfig.providers.openaiApiKey),
       anthropicConfigured: Boolean(runtimeConfig.providers.anthropicApiKey),
     },
+    featureFlags: runtimeConfig.featureFlags,
     uptimeSeconds: Math.round(process.uptime()),
   });
 });
 
-app.post(
-  "/api/ai/gemini/summarize",
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const transcript = typeof req.body?.transcript === "string" ? req.body.transcript.trim() : "";
-      if (!transcript) {
-        throw new HttpError(400, "INVALID_REQUEST", "Field \"transcript\" is required.");
-      }
-
-      const summary = await requireGeminiWriter().summarizeTranscript(transcript);
-      sendSuccess(res, { summary });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-app.post(
-  "/api/ai/gemini/analyze",
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const transcript = typeof req.body?.transcript === "string" ? req.body.transcript : "";
-      const projectContext = typeof req.body?.projectContext === "string" ? req.body.projectContext : "";
-      const contextSources = Array.isArray(req.body?.contextSources) ? req.body.contextSources : [];
-
-      if (!transcript.trim()) {
-        throw new HttpError(400, "INVALID_REQUEST", "Field \"transcript\" is required.");
-      }
-
-      const toolCalls = await requireGeminiWriter().analyzeMeetingTranscript(
-        transcript,
-        projectContext,
-        contextSources,
-      );
-      sendSuccess(res, { toolCalls });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-app.post(
-  "/api/ai/gemini/refine",
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const rawTranscript =
-        typeof req.body?.rawTranscript === "string" ? req.body.rawTranscript.trim() : "";
-      const fieldName = typeof req.body?.fieldName === "string" ? req.body.fieldName.trim() : "";
-      const currentItem =
-        req.body?.currentItem && typeof req.body.currentItem === "object" ? req.body.currentItem : null;
-      const projectContext = typeof req.body?.projectContext === "string" ? req.body.projectContext : "";
-
-      if (!rawTranscript || !fieldName || !currentItem) {
-        throw new HttpError(
-          400,
-          "INVALID_REQUEST",
-          "Fields \"rawTranscript\", \"fieldName\", and \"currentItem\" are required.",
-        );
-      }
-
-      const refinedText = await requireGeminiWriter().refineFieldContent(
-        rawTranscript,
-        fieldName,
-        currentItem,
-        projectContext,
-      );
-      sendSuccess(res, { refinedText });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
+app.use("/api/ai", createAiRouter(runtimeConfig));
 
 app.use((req: Request, _: Response, next: NextFunction) => {
   next(
