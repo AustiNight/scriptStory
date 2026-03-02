@@ -1,0 +1,49 @@
+{
+  "iterations": [
+    {
+      "iteration": 1,
+      "startedAt": "2026-03-02T21:22:35.483Z",
+      "endedAt": "2026-03-02T21:27:07.521Z",
+      "durationMs": 271980,
+      "agent": "codex",
+      "model": "gpt-5.3-codex",
+      "toolsUsed": {
+        "fixed": 1,
+        "the": 1,
+        "local": 1
+      },
+      "filesModified": [
+        ".gitignore",
+        "README.md",
+        "package.json",
+        ".env.example",
+        ".ralph/",
+        "config/",
+        "docs/",
+        "scripts/",
+        "server/"
+      ],
+      "exitCode": 0,
+      "completionDetected": false,
+      "errors": [
+        "- [ ] Add failure-mode tests (MCP offline, invalid auth, provider timeout, malformed tool args) and verify graceful fallback behavior.",
+        "printf '[guardrails] ERROR: %s\\n' \"$1\" >&2",
+        "printf '[guardrails] ERROR: %s\\n%s\\n' \"$1\" \"$2\" >&2",
+        "+  printf '[guardrails] ERROR: %s\\n' \"$1\" >&2",
+        "+  printf '[guardrails] ERROR: %s\\n%s\\n' \"$1\" \"$2\" >&2"
+      ]
+    }
+  ],
+  "totalDurationMs": 271980,
+  "struggleIndicators": {
+    "repeatedErrors": {
+      "- [ ] Add failure-mode tests (MCP offline, invalid auth, provider timeout, malformed tool args) and ": 1,
+      "printf '[guardrails] ERROR: %s\\n' \"$1\" >&2": 1,
+      "printf '[guardrails] ERROR: %s\\n%s\\n' \"$1\" \"$2\" >&2": 1,
+      "+  printf '[guardrails] ERROR: %s\\n' \"$1\" >&2": 1,
+      "+  printf '[guardrails] ERROR: %s\\n%s\\n' \"$1\" \"$2\" >&2": 1
+    },
+    "noProgressIterations": 0,
+    "shortIterations": 0
+  }
+}

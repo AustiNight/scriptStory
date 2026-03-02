@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "check:guardrails": "bash ./scripts/check-guardrails.sh",
+    "check": "npm run check:guardrails",
+    "verify": "npm run check && npm run build",
     "build": "vite build",
     "preview": "vite preview"
   },
