@@ -67,6 +67,60 @@ export interface AiProviderCatalog {
   writers: AiWriterProviderStatus[];
 }
 
+export interface AiTelemetryAggregateBucket {
+  requests: number;
+  successes: number;
+  failures: number;
+  avgDurationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  retrievalTokens: number;
+  totalTokens: number;
+  lastRequestAt?: string;
+}
+
+export interface AiServerTelemetryAggregate {
+  requests: number;
+  reachableRequests: number;
+  failedRequests: number;
+  avgLatencyMs: number;
+  retrievalTokens: number;
+  lastUsedAt?: string;
+}
+
+export interface AiTelemetryEvent {
+  id: string;
+  timestamp: string;
+  provider: string;
+  operation: "summarize" | "analyze" | "refine";
+  success: boolean;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  retrievalTokens: number;
+  totalTokens: number;
+  errorCode?: string;
+  contextMode?: "auto-smart" | "manual-enrich";
+  serverUsage?: Array<{
+    serverId: string;
+    serverName: string;
+    tokens: number;
+    reachable: boolean;
+    fromCache: boolean;
+    latencyMs: number;
+    errorCode?: string;
+  }>;
+}
+
+export interface AiDiagnosticsSnapshot {
+  generatedAt: string;
+  totals: AiTelemetryAggregateBucket;
+  byProvider: Record<string, AiTelemetryAggregateBucket>;
+  byOperation: Record<"summarize" | "analyze" | "refine", AiTelemetryAggregateBucket>;
+  byServer: Record<string, AiServerTelemetryAggregate>;
+  recent: AiTelemetryEvent[];
+}
+
 export const DEFAULT_CONTEXT_POLICY_CONFIG: ContextPolicyConfig = Object.freeze({
   mode: "auto-smart",
   globalTokenBudget: 900,
@@ -395,6 +449,10 @@ export class GeminiLiveService {
 
   public async fetchProviderCatalog(): Promise<AiProviderCatalog> {
     return this.get<AiProviderCatalog>("/api/ai/providers");
+  }
+
+  public async fetchDiagnostics(): Promise<AiDiagnosticsSnapshot> {
+    return this.get<AiDiagnosticsSnapshot>("/api/ai/telemetry");
   }
 
   private getSelectedWriterProvider(): ApiWriterProviderAdapter {

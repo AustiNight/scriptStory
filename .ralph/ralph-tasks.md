@@ -108,13 +108,13 @@
   - [x] Add generated-item context trace view (source citations and retrieval stats) in work-item card details or side panel.
   - [x] Acceptance Criteria: User can fully configure providers and MCP context behavior from UI without code edits or direct file edits.
 
-- [ ] Epic: Quality, Regression, and Cost Validation
-  - [ ] Build transcript fixture suite covering bug reports, stories/features, mixed meeting chatter, and ambiguous requirements.
-  - [ ] Add regression checks comparing provider outputs to expected tool-call structure and minimum quality rubric.
-  - [ ] Add token usage telemetry per request/provider/server and expose aggregate stats in a local diagnostics panel.
-  - [ ] Add failure-mode tests (MCP offline, invalid auth, provider timeout, malformed tool args) and verify graceful fallback behavior.
-  - [ ] Add feature-flag regression checks proving app remains stable with new capabilities disabled.
-  - [ ] Acceptance Criteria: Provider + MCP features pass regression suite, quality rubric, and token-budget compliance checks with graceful degradation on failures.
+- [x] Epic: Quality, Regression, and Cost Validation
+  - [x] Build transcript fixture suite covering bug reports, stories/features, mixed meeting chatter, and ambiguous requirements.
+  - [x] Add regression checks comparing provider outputs to expected tool-call structure and minimum quality rubric.
+  - [x] Add token usage telemetry per request/provider/server and expose aggregate stats in a local diagnostics panel.
+  - [x] Add failure-mode tests (MCP offline, invalid auth, provider timeout, malformed tool args) and verify graceful fallback behavior.
+  - [x] Add feature-flag regression checks proving app remains stable with new capabilities disabled.
+  - [x] Acceptance Criteria: Provider + MCP features pass regression suite, quality rubric, and token-budget compliance checks with graceful degradation on failures.
 
 - [ ] Epic: Future Evolution Hooks (Per-User/Per-Workspace Readiness Without Implementing Multi-User Now)
   - [ ] Introduce config domain model with explicit ownership fields (`scopeType`, `scopeId`) while using fixed local single-user defaults for MVP.

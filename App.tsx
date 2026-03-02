@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { WorkItem, WorkItemType, Priority, Risk, CreateWorkItemArgs, UpdateWorkItemArgs, AppMode, SavedTranscript, ADOConfig, FilterState, FilterArgs, VisualArgs, DeleteArgs, SwitchModeArgs, FIBONACCI_SEQUENCE, SearchMode, PushedItemLog, ContextSource, WorkItemContextTrace } from './types';
-import { geminiLive, SessionType, DEFAULT_CONTEXT_POLICY_CONFIG, sanitizeContextPolicyConfig, type AiProviderCatalog, type ContextPolicyConfig } from './services/geminiLiveService';
+import { geminiLive, SessionType, DEFAULT_CONTEXT_POLICY_CONFIG, sanitizeContextPolicyConfig, type AiDiagnosticsSnapshot, type AiProviderCatalog, type ContextPolicyConfig } from './services/geminiLiveService';
 import { DEFAULT_PROVIDER_SELECTION, sanitizeProviderSelection, type ProviderSelection, type TranscriptionProviderId, type WriterProviderId } from './config/providerContracts';
 import { DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG, sanitizeWriterProviderRuntimeConfig, type AnthropicWriterRuntimeConfig, type OpenAIWriterRuntimeConfig, type WriterProviderRuntimeConfig } from './config/providerRuntimeConfig';
 import { pushToADO } from './services/adoService';
@@ -52,7 +52,7 @@ const INITIAL_ITEMS: WorkItem[] = [
   }
 ];
 
-type SettingsTab = 'ADO' | 'KNOWLEDGE' | 'AI_PROVIDERS' | 'MCP_SERVERS' | 'CONTEXT_POLICY';
+type SettingsTab = 'ADO' | 'KNOWLEDGE' | 'AI_PROVIDERS' | 'MCP_SERVERS' | 'CONTEXT_POLICY' | 'DIAGNOSTICS';
 type McpTransport = 'http' | 'command';
 type McpAuthType = 'none' | 'bearer' | 'basic' | 'header';
 
@@ -273,6 +273,9 @@ export default function App() {
   const [providerCatalog, setProviderCatalog] = useState<AiProviderCatalog | null>(null);
   const [providerCatalogError, setProviderCatalogError] = useState<string | null>(null);
   const [isProviderCatalogLoading, setIsProviderCatalogLoading] = useState(false);
+  const [diagnosticsSnapshot, setDiagnosticsSnapshot] = useState<AiDiagnosticsSnapshot | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
   const [isMcpLoading, setIsMcpLoading] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
@@ -537,6 +540,19 @@ export default function App() {
       }
   }, []);
 
+  const refreshDiagnostics = useCallback(async () => {
+      setIsDiagnosticsLoading(true);
+      setDiagnosticsError(null);
+      try {
+          const data = await geminiLive.fetchDiagnostics();
+          setDiagnosticsSnapshot(data);
+      } catch (e: any) {
+          setDiagnosticsError(e.message || 'Failed to load diagnostics telemetry.');
+      } finally {
+          setIsDiagnosticsLoading(false);
+      }
+  }, []);
+
   const refreshMcpServers = useCallback(async () => {
       setIsMcpLoading(true);
       setMcpError(null);
@@ -769,6 +785,12 @@ export default function App() {
           refreshMcpServers();
       }
   }, [showSettings, settingsTab, refreshMcpServers]);
+
+  useEffect(() => {
+      if (showSettings && settingsTab === 'DIAGNOSTICS') {
+          refreshDiagnostics();
+      }
+  }, [showSettings, settingsTab, refreshDiagnostics]);
 
   const toggleSelection = (id: string) => {
     const newSet = new Set(selectedItemIds);
@@ -1093,6 +1115,7 @@ export default function App() {
                       <button onClick={() => setSettingsTab('AI_PROVIDERS')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'AI_PROVIDERS' ? 'border-b-2 border-cyan-400 text-white' : 'text-gray-500'}`}>AI Providers</button>
                       <button onClick={() => setSettingsTab('MCP_SERVERS')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'MCP_SERVERS' ? 'border-b-2 border-emerald-400 text-white' : 'text-gray-500'}`}>MCP Servers</button>
                       <button onClick={() => setSettingsTab('CONTEXT_POLICY')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'CONTEXT_POLICY' ? 'border-b-2 border-orange-400 text-white' : 'text-gray-500'}`}>Context Policy</button>
+                      <button onClick={() => setSettingsTab('DIAGNOSTICS')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'DIAGNOSTICS' ? 'border-b-2 border-lime-400 text-white' : 'text-gray-500'}`}>Diagnostics</button>
                       <button onClick={() => setSettingsTab('ADO')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'ADO' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500'}`}>Integrations</button>
                       <button onClick={() => setSettingsTab('KNOWLEDGE')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'KNOWLEDGE' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500'}`}>Knowledge Base</button>
                   </div>
@@ -1384,6 +1407,112 @@ export default function App() {
                                       </div>
                                   </div>
                               </div>
+                          </div>
+                      )}
+                      {settingsTab === 'DIAGNOSTICS' && (
+                          <div className="space-y-6">
+                              <div className="flex items-center justify-between">
+                                  <h3 className="text-sm font-mono uppercase tracking-wider text-lime-300">Token + Request Diagnostics</h3>
+                                  <button
+                                      onClick={refreshDiagnostics}
+                                      disabled={isDiagnosticsLoading}
+                                      className="px-3 py-1 rounded border border-white/15 text-xs text-slate-300 hover:bg-white/5 disabled:opacity-50"
+                                  >
+                                      {isDiagnosticsLoading ? 'Refreshing...' : 'Refresh Diagnostics'}
+                                  </button>
+                              </div>
+                              {diagnosticsError && (
+                                  <div className="text-xs text-rose-300 bg-rose-900/20 border border-rose-500/30 rounded p-3">{diagnosticsError}</div>
+                              )}
+                              {!diagnosticsSnapshot && !isDiagnosticsLoading && !diagnosticsError && (
+                                  <div className="text-xs text-slate-500">No telemetry data yet. Run summarize/analyze/refine requests to populate diagnostics.</div>
+                              )}
+                              {diagnosticsSnapshot && (
+                                  <div className="space-y-4">
+                                      <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                                          <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                              <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Requests</div>
+                                              <div className="text-2xl font-semibold text-white">{diagnosticsSnapshot.totals.requests}</div>
+                                          </div>
+                                          <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                              <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Success</div>
+                                              <div className="text-2xl font-semibold text-emerald-300">{diagnosticsSnapshot.totals.successes}</div>
+                                          </div>
+                                          <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                              <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Failures</div>
+                                              <div className="text-2xl font-semibold text-rose-300">{diagnosticsSnapshot.totals.failures}</div>
+                                          </div>
+                                          <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                              <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Total Tokens</div>
+                                              <div className="text-2xl font-semibold text-cyan-200">{diagnosticsSnapshot.totals.totalTokens}</div>
+                                          </div>
+                                          <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                              <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Avg Duration</div>
+                                              <div className="text-2xl font-semibold text-amber-200">{diagnosticsSnapshot.totals.avgDurationMs}ms</div>
+                                          </div>
+                                      </div>
+                                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                          <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                              <div className="text-xs font-mono uppercase tracking-wider text-slate-400 mb-3">By Provider</div>
+                                              <div className="space-y-2">
+                                                  {Object.entries(diagnosticsSnapshot.byProvider).length === 0 && (
+                                                      <div className="text-xs text-slate-500">No provider activity yet.</div>
+                                                  )}
+                                                  {Object.entries(diagnosticsSnapshot.byProvider).map(([provider, bucket]) => (
+                                                      <div key={provider} className="flex items-center justify-between border border-white/10 rounded-lg px-3 py-2 bg-black/20">
+                                                          <div>
+                                                              <div className="text-sm uppercase">{provider}</div>
+                                                              <div className="text-[11px] text-slate-500">Req: {bucket.requests} • Fail: {bucket.failures}</div>
+                                                          </div>
+                                                          <div className="text-right">
+                                                              <div className="text-sm text-cyan-200">{bucket.totalTokens} tokens</div>
+                                                              <div className="text-[11px] text-slate-500">{bucket.avgDurationMs}ms avg</div>
+                                                          </div>
+                                                      </div>
+                                                  ))}
+                                              </div>
+                                          </div>
+                                          <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                              <div className="text-xs font-mono uppercase tracking-wider text-slate-400 mb-3">By MCP Server</div>
+                                              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                                                  {Object.entries(diagnosticsSnapshot.byServer).length === 0 && (
+                                                      <div className="text-xs text-slate-500">No MCP retrieval telemetry yet.</div>
+                                                  )}
+                                                  {Object.entries(diagnosticsSnapshot.byServer).map(([serverKey, bucket]) => (
+                                                      <div key={serverKey} className="border border-white/10 rounded-lg px-3 py-2 bg-black/20">
+                                                          <div className="text-sm">{serverKey}</div>
+                                                          <div className="text-[11px] text-slate-500 mt-1">
+                                                              Requests: {bucket.requests} • Reachable: {bucket.reachableRequests} • Failed: {bucket.failedRequests} • Tokens: {bucket.retrievalTokens}
+                                                          </div>
+                                                      </div>
+                                                  ))}
+                                              </div>
+                                          </div>
+                                      </div>
+                                      <div className="bg-black/30 border border-white/10 rounded-xl p-4">
+                                          <div className="text-xs font-mono uppercase tracking-wider text-slate-400 mb-3">Recent Requests</div>
+                                          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                                              {diagnosticsSnapshot.recent.length === 0 && (
+                                                  <div className="text-xs text-slate-500">No requests recorded yet.</div>
+                                              )}
+                                              {diagnosticsSnapshot.recent.map(event => (
+                                                  <div key={event.id} className="border border-white/10 rounded-lg px-3 py-2 bg-black/20">
+                                                      <div className="flex items-center justify-between">
+                                                          <div className="text-sm uppercase">{event.provider} • {event.operation}</div>
+                                                          <div className={`text-[10px] px-2 py-1 rounded ${event.success ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                                                              {event.success ? 'SUCCESS' : 'FAILED'}
+                                                          </div>
+                                                      </div>
+                                                      <div className="text-[11px] text-slate-500 mt-1">
+                                                          {new Date(event.timestamp).toLocaleString()} • {event.durationMs}ms • in:{event.inputTokens} out:{event.outputTokens} retrieval:{event.retrievalTokens} total:{event.totalTokens}
+                                                          {event.errorCode ? ` • ${event.errorCode}` : ''}
+                                                      </div>
+                                                  </div>
+                                              ))}
+                                          </div>
+                                      </div>
+                                  </div>
+                              )}
                           </div>
                       )}
                       {settingsTab === 'ADO' && (

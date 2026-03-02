@@ -152,3 +152,89 @@ test("McpGateway queryServer sanitizes snippets and preserves resource tags", as
   assert.equal(result.snippets[0].text.includes("<b>"), false);
   assert.equal(result.snippets[0].text.includes("OAuth token rotation"), true);
 });
+
+test("McpGateway queryServer handles offline endpoint with graceful failure result", async () => {
+  const { registryFilePath, secretsFilePath, auditLogPath } = await createTempPaths();
+  const store = new McpRegistryStore({ registryFilePath, secretsFilePath });
+
+  await store.createServer({
+    id: "offline-http",
+    name: "Offline HTTP",
+    transport: "http",
+    endpointOrCommand: "http://127.0.0.1:7998/mcp",
+    auth: { type: "none" },
+    enabled: true,
+    priority: 10,
+    timeouts: {
+      requestMs: 2_000,
+      cooldownMs: 2_000,
+      failureThreshold: 2,
+    },
+    maxPayload: 2_000,
+    allowedResources: [],
+  });
+
+  const gateway = new McpGateway({
+    registryStore: store,
+    auditLogPath,
+    fetchImpl: async () => {
+      throw new TypeError("fetch failed");
+    },
+  });
+
+  const result = await gateway.queryServer("offline-http", {
+    query: "incident runbook",
+  });
+
+  assert.equal(result.reachable, false);
+  assert.equal(result.errorCode, "MCP_QUERY_FAILED");
+  assert.equal(result.snippets.length, 0);
+  assert.equal(result.health.totalFailures > 0, true);
+});
+
+test("McpGateway queryServer handles invalid auth gracefully", async () => {
+  const { registryFilePath, secretsFilePath, auditLogPath } = await createTempPaths();
+  const store = new McpRegistryStore({ registryFilePath, secretsFilePath });
+
+  await store.createServer({
+    id: "auth-http",
+    name: "Auth HTTP",
+    transport: "http",
+    endpointOrCommand: "http://127.0.0.1:7999/mcp",
+    auth: {
+      type: "bearer",
+      envVar: "MISSING_TOKEN_ENV",
+    },
+    enabled: true,
+    priority: 10,
+    timeouts: {
+      requestMs: 2_000,
+      cooldownMs: 2_000,
+      failureThreshold: 2,
+    },
+    maxPayload: 2_000,
+    allowedResources: [],
+  });
+
+  const gateway = new McpGateway({
+    registryStore: store,
+    auditLogPath,
+    fetchImpl: async (_input, init) => {
+      const authHeader = new Headers(init?.headers as HeadersInit).get("authorization");
+      assert.equal(authHeader, null);
+      return new Response("missing authorization", {
+        status: 401,
+        headers: { "content-type": "text/plain" },
+      });
+    },
+  });
+
+  const result = await gateway.queryServer("auth-http", {
+    query: "secure endpoint docs",
+  });
+
+  assert.equal(result.reachable, false);
+  assert.equal(result.errorCode, "MCP_QUERY_FAILED");
+  assert.equal(result.snippets.length, 0);
+  assert.equal(result.health.totalFailures > 0, true);
+});
