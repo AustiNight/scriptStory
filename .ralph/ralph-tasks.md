@@ -65,16 +65,16 @@
   - [x] Add integration tests with same transcript fixtures used for Gemini/OpenAI to compare extraction fidelity.
   - [x] Acceptance Criteria: User can choose Anthropic writer provider and complete end-to-end work-item generation without schema regressions.
 
-- [ ] Epic: Build MCP Gateway + Server Registry (Single-User Local MVP)
-  - [ ] Add backend MCP gateway service that is the only component allowed to communicate with MCP servers.
-  - [ ] Add MCP registry schema for arbitrary servers:
+- [x] Epic: Build MCP Gateway + Server Registry (Single-User Local MVP)
+  - [x] Add backend MCP gateway service that is the only component allowed to communicate with MCP servers.
+  - [x] Add MCP registry schema for arbitrary servers:
     - `id`, `name`, `transport`, `endpointOrCommand`, `auth`, `enabled`, `priority`, `timeouts`, `maxPayload`, `allowedResources`.
-  - [ ] Persist registry in `.local-data/mcp-servers.json` with schema version for future migration.
-  - [ ] Add registry CRUD endpoints (`GET/POST/PATCH/DELETE /api/mcp/servers`) and test endpoint (`POST /api/mcp/servers/:id/test`).
-  - [ ] Add auth-secret handling for MCP server configs (store secrets outside committed files and redact values in logs/API responses).
-  - [ ] Add context sanitation pipeline for MCP results (truncate oversized payloads, strip unsafe markup, normalize to plain text with source metadata).
-  - [ ] Add per-server circuit breaker state and health tracking to avoid repeated failures.
-  - [ ] Acceptance Criteria: Single local user can add arbitrary MCP server configs, test connectivity, enable/disable servers, and persist state across restarts.
+  - [x] Persist registry in `.local-data/mcp-servers.json` with schema version for future migration.
+  - [x] Add registry CRUD endpoints (`GET/POST/PATCH/DELETE /api/mcp/servers`) and test endpoint (`POST /api/mcp/servers/:id/test`).
+  - [x] Add auth-secret handling for MCP server configs (store secrets outside committed files and redact values in logs/API responses).
+  - [x] Add context sanitation pipeline for MCP results (truncate oversized payloads, strip unsafe markup, normalize to plain text with source metadata).
+  - [x] Add per-server circuit breaker state and health tracking to avoid repeated failures.
+  - [x] Acceptance Criteria: Single local user can add arbitrary MCP server configs, test connectivity, enable/disable servers, and persist state across restarts.
 
 - [ ] Epic: Implement Token-Efficient Context Retrieval Strategy (Recommended Hybrid)
   - [ ] Implement default `Auto-Smart Retrieval` policy:

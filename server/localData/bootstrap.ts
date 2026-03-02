@@ -11,6 +11,13 @@ const LOCAL_DATA_FILES = [
     },
   },
   {
+    fileName: "mcp-secrets.json",
+    initialData: {
+      schemaVersion: 1,
+      secretsByServerId: {},
+    },
+  },
+  {
     fileName: "defaults.json",
     initialData: {
       schemaVersion: 1,

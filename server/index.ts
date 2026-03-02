@@ -7,6 +7,7 @@ import { loadLocalEnv } from "./config/loadLocalEnv.ts";
 import { bootstrapLocalData } from "./localData/bootstrap.ts";
 import { sendError, sendSuccess } from "./http/envelope.ts";
 import { HttpError, toHttpError } from "./http/errors.ts";
+import { createMcpRouter } from "./mcp/router.ts";
 
 loadLocalEnv();
 
@@ -54,6 +55,7 @@ app.get("/api/health", (_, res) => {
 });
 
 app.use("/api/ai", createAiRouter(runtimeConfig));
+app.use("/api/mcp", createMcpRouter(runtimeConfig));
 
 app.use((req: Request, _: Response, next: NextFunction) => {
   next(
