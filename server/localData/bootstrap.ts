@@ -1,26 +1,29 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+import { MCP_REGISTRY_SCHEMA_VERSION, MCP_SECRETS_SCHEMA_VERSION } from "../mcp/schema.ts";
+import { MVP_LOCAL_SINGLE_USER_SCOPE } from "../config/configOwnership.ts";
 import { LOCAL_DATA_DIR } from "../config/paths.ts";
+import { LOCAL_DATA_DOCUMENTS } from "./documents.ts";
+import { FileLocalDataStorageAdapter } from "./storage.ts";
 
 const LOCAL_DATA_FILES = [
   {
-    fileName: "mcp-servers.json",
+    documentName: LOCAL_DATA_DOCUMENTS.mcpRegistry,
     initialData: {
-      schemaVersion: 1,
+      schemaVersion: MCP_REGISTRY_SCHEMA_VERSION,
       servers: [],
     },
   },
   {
-    fileName: "mcp-secrets.json",
+    documentName: LOCAL_DATA_DOCUMENTS.mcpSecrets,
     initialData: {
-      schemaVersion: 1,
+      schemaVersion: MCP_SECRETS_SCHEMA_VERSION,
       secretsByServerId: {},
     },
   },
   {
-    fileName: "defaults.json",
+    documentName: LOCAL_DATA_DOCUMENTS.defaults,
     initialData: {
       schemaVersion: 1,
+      ...MVP_LOCAL_SINGLE_USER_SCOPE,
       providerDefaults: {
         writer: "gemini",
         transcription: "gemini",
@@ -32,7 +35,7 @@ const LOCAL_DATA_FILES = [
     },
   },
   {
-    fileName: "cache-metadata.json",
+    documentName: LOCAL_DATA_DOCUMENTS.cacheMetadata,
     initialData: {
       schemaVersion: 1,
       entries: [],
@@ -46,18 +49,13 @@ export interface LocalDataBootstrapResult {
 }
 
 export const bootstrapLocalData = async (): Promise<LocalDataBootstrapResult> => {
-  await fs.mkdir(LOCAL_DATA_DIR, { recursive: true });
-
+  const storage = new FileLocalDataStorageAdapter();
   const initializedFiles: string[] = [];
 
   for (const entry of LOCAL_DATA_FILES) {
-    const targetPath = path.join(LOCAL_DATA_DIR, entry.fileName);
-
-    try {
-      await fs.access(targetPath);
-    } catch {
-      await fs.writeFile(targetPath, `${JSON.stringify(entry.initialData, null, 2)}\n`, "utf8");
-      initializedFiles.push(entry.fileName);
+    const created = await storage.ensureDocument(entry.documentName, entry.initialData);
+    if (created) {
+      initializedFiles.push(entry.documentName);
     }
   }
 

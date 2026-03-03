@@ -1,13 +1,14 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { createHash } from "node:crypto";
-import { LOCAL_DATA_DIR } from "../config/paths.ts";
+import { LOCAL_DATA_DOCUMENTS } from "../localData/documents.ts";
+import {
+  FileLocalDataStorageAdapter,
+  type LocalDataStorageAdapter,
+} from "../localData/storage.ts";
 import type { SanitizedMcpContextSnippet } from "./sanitizeContext.ts";
-
-const DEFAULT_METADATA_PATH = path.join(LOCAL_DATA_DIR, "cache-metadata.json");
 
 export interface McpRetrievalCacheOptions {
   metadataFilePath?: string;
+  storage?: LocalDataStorageAdapter;
   now?: () => number;
 }
 
@@ -43,13 +44,25 @@ export const hashRetrievalQuery = (query: string): string =>
 
 export class McpRetrievalCache {
   private readonly now: () => number;
-  private readonly metadataFilePath: string;
+  private readonly storage: LocalDataStorageAdapter;
+  private readonly metadataDocumentName: string;
   private readonly entries = new Map<string, McpRetrievalCacheEntry>();
   private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(options: McpRetrievalCacheOptions = {}) {
     this.now = options.now || (() => Date.now());
-    this.metadataFilePath = options.metadataFilePath || DEFAULT_METADATA_PATH;
+    this.storage =
+      options.storage ||
+      new FileLocalDataStorageAdapter({
+        ...(options.metadataFilePath
+          ? {
+              documentPaths: {
+                [LOCAL_DATA_DOCUMENTS.cacheMetadata]: options.metadataFilePath,
+              },
+            }
+          : {}),
+      });
+    this.metadataDocumentName = LOCAL_DATA_DOCUMENTS.cacheMetadata;
   }
 
   public makeKey(serverId: string, queryHash: string, maxSnippets: number, maxSnippetChars: number): string {
@@ -149,8 +162,7 @@ export class McpRetrievalCache {
     };
 
     try {
-      await fs.mkdir(path.dirname(this.metadataFilePath), { recursive: true });
-      await fs.writeFile(this.metadataFilePath, `${JSON.stringify(fileData, null, 2)}\n`, "utf8");
+      await this.storage.writeDocument(this.metadataDocumentName, fileData);
     } catch {
       // Cache metadata write failures should not break request flow.
     }

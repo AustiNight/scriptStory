@@ -5,6 +5,7 @@ import {
   DEFAULT_PROVIDER_SELECTION,
   PROVIDER_CAPABILITY_MATRIX,
   isWriterProviderId,
+  type TranscriptionProviderId,
   type WriterProviderId,
   type WriterProvider,
 } from "../../config/providerContracts.ts";
@@ -48,6 +49,15 @@ interface WriterRegistryEntry {
   requiredEnv: string;
 }
 
+interface TranscriptionRegistryEntry {
+  id: TranscriptionProviderId;
+  enabled: boolean;
+  configured: boolean;
+  implemented: boolean;
+  unavailableReason?: string;
+  requiredEnv: string | null;
+}
+
 const buildWriterRegistry = (
   runtimeConfig: AiRuntimeConfig,
 ): Record<WriterProviderId, WriterRegistryEntry> => ({
@@ -83,6 +93,19 @@ const buildWriterRegistry = (
   },
 });
 
+const buildTranscriptionRegistry = (): Record<
+  TranscriptionProviderId,
+  TranscriptionRegistryEntry
+> => ({
+  gemini: {
+    id: "gemini",
+    enabled: true,
+    configured: true,
+    implemented: true,
+    requiredEnv: null,
+  },
+});
+
 const getWriterProviderStatus = (entry: WriterRegistryEntry) => ({
   id: entry.id,
   enabled: entry.enabled,
@@ -91,6 +114,35 @@ const getWriterProviderStatus = (entry: WriterRegistryEntry) => ({
   available: entry.enabled && entry.configured && entry.implemented && Boolean(entry.adapter),
   capabilities: PROVIDER_CAPABILITY_MATRIX[entry.id],
 });
+
+const getTranscriptionProviderStatus = (entry: TranscriptionRegistryEntry) => {
+  const available = entry.enabled && entry.configured && entry.implemented;
+  let unavailableReason: string | undefined;
+
+  if (!available) {
+    if (!entry.enabled) {
+      unavailableReason = `Provider "${entry.id}" is disabled by feature flag.`;
+    } else if (!entry.configured && entry.requiredEnv) {
+      unavailableReason = `Provider "${entry.id}" key is not configured on the server. Missing ${entry.requiredEnv}.`;
+    } else if (!entry.implemented) {
+      unavailableReason =
+        entry.unavailableReason ||
+        `Provider "${entry.id}" transcription adapter is not implemented yet.`;
+    } else {
+      unavailableReason = `Provider "${entry.id}" is unavailable in this runtime.`;
+    }
+  }
+
+  return {
+    id: entry.id,
+    enabled: entry.enabled,
+    configured: entry.configured,
+    implemented: entry.implemented,
+    available,
+    ...(unavailableReason ? { unavailableReason } : {}),
+    capabilities: PROVIDER_CAPABILITY_MATRIX[entry.id],
+  };
+};
 
 const readRequestedWriterProvider = (request: Request): WriterProviderId => {
   const candidate = request.body?.provider;
@@ -184,6 +236,7 @@ const toServerUsage = (trace: ContextRetrievalTrace): AiServerUsageEvent[] => {
 export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
   const router = Router();
   const writerRegistry = buildWriterRegistry(runtimeConfig);
+  const transcriptionRegistry = buildTranscriptionRegistry();
   const mcpRegistryStore = new McpRegistryStore();
   const mcpGateway = new McpGateway({ registryStore: mcpRegistryStore });
   const mcpRetrievalCache = new McpRetrievalCache();
@@ -462,6 +515,9 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
       defaults: DEFAULT_PROVIDER_SELECTION,
       capabilities: PROVIDER_CAPABILITY_MATRIX,
       writers: Object.values(writerRegistry).map(getWriterProviderStatus),
+      transcriptions: Object.values(transcriptionRegistry).map(
+        getTranscriptionProviderStatus,
+      ),
     });
   });
 

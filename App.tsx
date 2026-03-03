@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { WorkItem, WorkItemType, Priority, Risk, CreateWorkItemArgs, UpdateWorkItemArgs, AppMode, SavedTranscript, ADOConfig, FilterState, FilterArgs, VisualArgs, DeleteArgs, SwitchModeArgs, FIBONACCI_SEQUENCE, SearchMode, PushedItemLog, ContextSource, WorkItemContextTrace } from './types';
 import { geminiLive, SessionType, DEFAULT_CONTEXT_POLICY_CONFIG, sanitizeContextPolicyConfig, type AiDiagnosticsSnapshot, type AiProviderCatalog, type ContextPolicyConfig } from './services/geminiLiveService';
 import { DEFAULT_PROVIDER_SELECTION, sanitizeProviderSelection, type ProviderSelection, type TranscriptionProviderId, type WriterProviderId } from './config/providerContracts';
@@ -180,6 +180,27 @@ const toApiErrorMessage = <T,>(envelope: ApiEnvelope<T>, status: number): string
   return `Request failed (${status})`;
 };
 
+const ANALYSIS_MIN_SEGMENT_CHARS = 120;
+const ANALYSIS_CARRYOVER_MAX_CHARS = 18_000;
+
+const trimToMaxChars = (value: string, maxChars: number): string => {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  return value.slice(value.length - maxChars);
+};
+
+const hasWorkItemMutations = (toolCalls: unknown[]): boolean =>
+  toolCalls.some((call) => {
+    if (!call || typeof call !== 'object') {
+      return false;
+    }
+
+    const record = call as Record<string, unknown>;
+    return record.name === 'createWorkItem' || record.name === 'updateWorkItem';
+  });
+
 export default function App() {
   // -- State --
   const [items, setItems] = useState<WorkItem[]>(() => {
@@ -289,12 +310,48 @@ export default function App() {
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
   const [isPushingToADO, setIsPushingToADO] = useState(false);
 
+  const selectedTranscriptionStatus = useMemo(() => {
+      if (!providerCatalog) return null;
+      return (
+          providerCatalog.transcriptions.find(
+              provider => provider.id === providerSelection.transcription,
+          ) || null
+      );
+  }, [providerCatalog, providerSelection.transcription]);
+
+  const selectedWriterStatus = useMemo(() => {
+      if (!providerCatalog) return null;
+      return (
+          providerCatalog.writers.find(
+              writer => writer.id === providerSelection.writer,
+          ) || null
+      );
+  }, [providerCatalog, providerSelection.writer]);
+
+  const transcriptionUnavailableMessage =
+      selectedTranscriptionStatus && !selectedTranscriptionStatus.available
+          ? selectedTranscriptionStatus.unavailableReason ||
+            'Selected transcription provider is unavailable. Use Import to upload transcripts.'
+          : null;
+
+  const writerUnavailableMessage =
+      selectedWriterStatus && !selectedWriterStatus.available
+          ? !selectedWriterStatus.enabled
+              ? 'Selected writer provider is disabled by feature flag.'
+              : !selectedWriterStatus.configured
+                  ? 'Selected writer provider key is not configured on the server.'
+                  : !selectedWriterStatus.implemented
+                      ? 'Selected writer provider is not implemented in this runtime.'
+                      : 'Selected writer provider is unavailable.'
+          : null;
+
   // -- Refs --
   const prevMeetingState = useRef(false);
   const burstTranscript = useRef<string>(""); 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const contextFileInputRef = useRef<HTMLInputElement>(null);
   const transcriptBufferRef = useRef<string>("");
+  const transcriptCarryoverRef = useRef<string>("");
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef(items);
   const contextSourcesRef = useRef(contextSources);
@@ -775,6 +832,10 @@ export default function App() {
   };
 
   useEffect(() => {
+      refreshProviderCatalog();
+  }, [refreshProviderCatalog]);
+
+  useEffect(() => {
       if (showSettings && settingsTab === 'AI_PROVIDERS') {
           refreshProviderCatalog();
       }
@@ -826,19 +887,33 @@ export default function App() {
   }, [selectedItemIds, focusedItemId]);
 
   const handleClearTranscript = useCallback(() => {
-      setTranscript([]); transcriptBufferRef.current = ""; burstTranscript.current = "";
+      setTranscript([]);
+      transcriptBufferRef.current = "";
+      transcriptCarryoverRef.current = "";
+      burstTranscript.current = "";
       (window as any)._batchIdMap = new Map();
   }, []);
 
-  const performIncrementalAnalysis = async () => {
-      if (!transcriptBufferRef.current.trim()) return;
-      const segment = transcriptBufferRef.current;
-      transcriptBufferRef.current = ""; 
+  const performIncrementalAnalysis = async (options?: { force?: boolean }) => {
+      const force = options?.force === true;
+      const bufferedSegment = transcriptBufferRef.current.trim();
+      const carryoverSegment = transcriptCarryoverRef.current.trim();
+      if (!bufferedSegment && !carryoverSegment) return;
+      if (!force && !carryoverSegment && bufferedSegment.length < ANALYSIS_MIN_SEGMENT_CHARS) return;
+
+      const segment = [carryoverSegment, bufferedSegment].filter(Boolean).join(' ').trim();
+      transcriptBufferRef.current = "";
+      if (!segment) return;
+
       setIsAnalyzingMeeting(true);
       (window as any)._batchIdMap = new Map();
       const basePolicy = contextPolicyRef.current;
       const manualOverride = manualEnrichPendingRef.current;
       try {
+          if (writerUnavailableMessage) {
+              throw new Error(writerUnavailableMessage);
+          }
+
           const projectContext = itemsRef.current.map(i => `ID:${i.id} Type:${i.type} Title:"${i.title}"`).join('\n');
           const activeSources = contextSourcesRef.current.filter(src => src.enabled);
           const effectivePolicy = manualOverride
@@ -846,6 +921,7 @@ export default function App() {
               : basePolicy;
           geminiLive.setContextPolicyConfig(effectivePolicy);
           const toolCalls = await geminiLive.analyzeMeetingTranscript(segment, projectContext, activeSources);
+          const mutationCallsFound = hasWorkItemMutations(toolCalls || []);
           if (toolCalls && toolCalls.length > 0) {
               const provider = providerSelectionRef.current.writer;
               for (const call of toolCalls) {
@@ -855,7 +931,12 @@ export default function App() {
                  else if (call.name === 'updateWorkItem') await tools.updateWorkItem(call.args as UpdateWorkItemArgs, contextTrace);
               }
           }
-      } catch (e) { console.error(e); } finally { setIsAnalyzingMeeting(false); }
+          transcriptCarryoverRef.current = mutationCallsFound ? "" : trimToMaxChars(segment, ANALYSIS_CARRYOVER_MAX_CHARS);
+      } catch (e: any) {
+          console.error(e);
+          transcriptCarryoverRef.current = trimToMaxChars(segment, ANALYSIS_CARRYOVER_MAX_CHARS);
+          setError(e?.message || 'Writer analysis failed.');
+      } finally { setIsAnalyzingMeeting(false); }
       if (manualOverride) {
           setManualEnrichPending(false);
           geminiLive.setContextPolicyConfig(basePolicy);
@@ -874,7 +955,7 @@ export default function App() {
               return [...prev, { role: 'user', text: `\n[IMPORT: ${file.name}]\n` + text }];
           });
           transcriptBufferRef.current = text;
-          await performIncrementalAnalysis();
+          await performIncrementalAnalysis({ force: true });
           const summary = await geminiLive.summarizeTranscript(text);
           setSavedTranscripts(prev => [{ id: generateId(), timestamp: Date.now(), fullText: text, summary }, ...prev]);
           if (fileInputRef.current) fileInputRef.current.value = '';
@@ -981,6 +1062,9 @@ export default function App() {
       (text, isUser) => {
         const { isMeetingRunning, isCommanding } = latestRef.current;
         if (isUser) {
+           if (!isMeetingRunning && !isCommanding) {
+               return;
+           }
            if (isMeetingRunning) transcriptBufferRef.current += text;
            if (isCommanding) burstTranscript.current += text;
            setTranscript(prev => {
@@ -1013,6 +1097,12 @@ export default function App() {
   useEffect(() => {
     const manage = async () => {
         try {
+            if ((isCommanding || isMeetingRunning) && transcriptionUnavailableMessage) {
+                throw new Error(transcriptionUnavailableMessage);
+            }
+            if (isMeetingRunning && writerUnavailableMessage) {
+                throw new Error(writerUnavailableMessage);
+            }
             if (isCommanding) {
                 if (activeSessionType !== 'COMMANDER') { await geminiLive.disconnect(); await geminiLive.connect('COMMANDER'); geminiLive.setMute(false); setActiveSessionType('COMMANDER'); }
             } else if (isMeetingRunning) {
@@ -1026,11 +1116,11 @@ export default function App() {
         }
     };
     manage();
-  }, [isCommanding, isMeetingRunning]); 
+  }, [isCommanding, isMeetingRunning, transcriptionUnavailableMessage, writerUnavailableMessage]); 
 
   useEffect(() => {
       if (prevMeetingState.current && !isMeetingRunning) {
-          performIncrementalAnalysis();
+          performIncrementalAnalysis({ force: true });
           const fullLog = transcript.filter(t => t.role === 'user').map(t => t.text).join('\n');
           if (fullLog) geminiLive.summarizeTranscript(fullLog).then(s => setSavedTranscripts(prev => [{ id: generateId(), timestamp: Date.now(), fullText: fullLog, summary: s }, ...prev]));
       }
@@ -1038,11 +1128,21 @@ export default function App() {
   }, [isMeetingRunning]);
 
   useEffect(() => {
-    const down = (e: KeyboardEvent) => { if (e.code === 'Space' && !e.repeat && !['INPUT', 'TEXTAREA'].includes((e.target as any).tagName)) { e.preventDefault(); burstTranscript.current = ""; setIsCommanding(true); } };
+    const down = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat && !['INPUT', 'TEXTAREA'].includes((e.target as any).tagName)) {
+        e.preventDefault();
+        if (transcriptionUnavailableMessage) {
+          setError(transcriptionUnavailableMessage);
+          return;
+        }
+        burstTranscript.current = "";
+        setIsCommanding(true);
+      }
+    };
     const up = (e: KeyboardEvent) => { if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes((e.target as any).tagName)) setIsCommanding(false); };
     window.addEventListener('keydown', down); window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
-  }, []);
+  }, [transcriptionUnavailableMessage]);
 
   const filteredItems = items.filter(itemMatchesFilter);
   const focusedRelationships: Relationship[] = [];
@@ -1075,7 +1175,20 @@ export default function App() {
                  <span>{mode} MODE</span>
               </div>
           </div>
-          <button onClick={() => setIsMeetingRunning(!isMeetingRunning)} className={`flex items-center gap-3 px-5 py-2 rounded-full border transition-all duration-300 ${isMeetingRunning ? 'bg-red-500/20 border-red-500 text-red-100 animate-pulse' : 'bg-white/5 border-white/10 text-gray-300'}`}>
+          <button
+            onClick={() => {
+              if (!isMeetingRunning && transcriptionUnavailableMessage) {
+                setError(transcriptionUnavailableMessage);
+                return;
+              }
+              if (!isMeetingRunning && writerUnavailableMessage) {
+                setError(writerUnavailableMessage);
+                return;
+              }
+              setIsMeetingRunning(!isMeetingRunning);
+            }}
+            className={`flex items-center gap-3 px-5 py-2 rounded-full border transition-all duration-300 ${isMeetingRunning ? 'bg-red-500/20 border-red-500 text-red-100 animate-pulse' : 'bg-white/5 border-white/10 text-gray-300'}`}
+          >
              <div className={`w-3 h-3 rounded-full ${isMeetingRunning ? 'bg-red-500' : 'bg-gray-400'}`} />
              <span className="text-xs font-bold tracking-widest">{isMeetingRunning ? 'MEETING LIVE' : 'START MEETING'}</span>
           </button>
@@ -1147,8 +1260,8 @@ export default function App() {
                                           <option value="openai">OpenAI</option>
                                           <option value="anthropic">Anthropic</option>
                                       </select>
-                                      <div className="text-[11px] text-slate-500">
-                                          Controls summarization, extraction, and refinement output.
+                                      <div className={`text-[11px] ${writerUnavailableMessage ? 'text-rose-300' : 'text-slate-500'}`}>
+                                          {writerUnavailableMessage || 'Controls summarization, extraction, and refinement output.'}
                                       </div>
                                   </div>
                                   <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
@@ -1160,33 +1273,55 @@ export default function App() {
                                       >
                                           <option value="gemini">Gemini</option>
                                       </select>
-                                      <div className="text-[11px] text-slate-500">
-                                          Real-time transcription currently uses Gemini in this runtime.
+                                      <div className={`text-[11px] ${transcriptionUnavailableMessage ? 'text-rose-300' : 'text-slate-500'}`}>
+                                          {transcriptionUnavailableMessage || 'Uses browser speech recognition for local live transcription.'}
                                       </div>
                                   </div>
                               </div>
                               <div className="bg-black/30 border border-white/10 rounded-xl p-4">
-                                  <div className="text-xs font-mono uppercase tracking-wider text-slate-400 mb-3">Backend Provider Availability</div>
+                                  <div className="text-xs font-mono uppercase tracking-wider text-slate-400 mb-3">Provider Availability</div>
                                   {!providerCatalog && !isProviderCatalogLoading && (
                                       <div className="text-xs text-slate-500">No status loaded yet.</div>
                                   )}
                                   {providerCatalog && (
-                                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                          {providerCatalog.writers.map(writer => (
-                                              <div key={writer.id} className="border border-white/10 rounded-lg p-3 bg-black/20">
-                                                  <div className="flex justify-between items-center">
-                                                      <span className="text-sm font-semibold uppercase">{writer.id}</span>
-                                                      <span className={`text-[10px] px-2 py-1 rounded ${writer.available ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-600/40 text-slate-300'}`}>
-                                                          {writer.available ? 'Available' : 'Unavailable'}
-                                                      </span>
+                                      <div className="space-y-3">
+                                          <div className="text-[11px] text-slate-500 uppercase tracking-wider">Writer Providers</div>
+                                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                              {providerCatalog.writers.map(writer => (
+                                                  <div key={writer.id} className="border border-white/10 rounded-lg p-3 bg-black/20">
+                                                      <div className="flex justify-between items-center">
+                                                          <span className="text-sm font-semibold uppercase">{writer.id}</span>
+                                                          <span className={`text-[10px] px-2 py-1 rounded ${writer.available ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-600/40 text-slate-300'}`}>
+                                                              {writer.available ? 'Available' : 'Unavailable'}
+                                                          </span>
+                                                      </div>
+                                                      <div className="text-[11px] text-slate-400 mt-2 space-y-1">
+                                                          <div>Enabled: {writer.enabled ? 'yes' : 'no'}</div>
+                                                          <div>Configured: {writer.configured ? 'yes' : 'no'}</div>
+                                                          <div>Tool calls: {writer.capabilities.toolCallSupport ? 'yes' : 'no'}</div>
+                                                      </div>
                                                   </div>
-                                                  <div className="text-[11px] text-slate-400 mt-2 space-y-1">
-                                                      <div>Enabled: {writer.enabled ? 'yes' : 'no'}</div>
-                                                      <div>Configured: {writer.configured ? 'yes' : 'no'}</div>
-                                                      <div>Tool calls: {writer.capabilities.toolCallSupport ? 'yes' : 'no'}</div>
+                                              ))}
+                                          </div>
+                                          <div className="text-[11px] text-slate-500 uppercase tracking-wider">Transcription Providers</div>
+                                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                              {providerCatalog.transcriptions.map(provider => (
+                                                  <div key={provider.id} className="border border-white/10 rounded-lg p-3 bg-black/20">
+                                                      <div className="flex justify-between items-center">
+                                                          <span className="text-sm font-semibold uppercase">{provider.id}</span>
+                                                          <span className={`text-[10px] px-2 py-1 rounded ${provider.available ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-600/40 text-slate-300'}`}>
+                                                              {provider.available ? 'Available' : 'Unavailable'}
+                                                          </span>
+                                                      </div>
+                                                      <div className="text-[11px] text-slate-400 mt-2 space-y-1">
+                                                          <div>Enabled: {provider.enabled ? 'yes' : 'no'}</div>
+                                                          <div>Configured: {provider.configured ? 'yes' : 'no'}</div>
+                                                          <div>Realtime audio: {provider.capabilities.realtimeAudio ? 'yes' : 'no'}</div>
+                                                          {provider.unavailableReason && <div className="text-rose-300">{provider.unavailableReason}</div>}
+                                                      </div>
                                                   </div>
-                                              </div>
-                                          ))}
+                                              ))}
+                                          </div>
                                       </div>
                                   )}
                               </div>

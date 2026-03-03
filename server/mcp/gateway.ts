@@ -5,7 +5,7 @@ import { TextDecoder } from "node:util";
 import { LOCAL_DATA_DIR } from "../config/paths.ts";
 import { HttpError } from "../http/errors.ts";
 import { sanitizeMcpContext, type SanitizedMcpContextSnippet } from "./sanitizeContext.ts";
-import { McpRegistryStore } from "./registryStore.ts";
+import type { McpRegistryRepository } from "./registryStore.ts";
 import type { McpServerAuth, McpServerRecord, McpServerSecrets } from "./schema.ts";
 
 type FetchLike = typeof fetch;
@@ -72,7 +72,7 @@ export interface McpGatewayQueryResult {
 }
 
 export interface McpGatewayOptions {
-  registryStore: McpRegistryStore;
+  registryStore: McpRegistryRepository;
   fetchImpl?: FetchLike;
   spawnImpl?: SpawnLike;
   now?: () => number;
@@ -278,7 +278,7 @@ const extractCandidateFromValue = (value: unknown): ExtractedContextCandidate | 
 };
 
 export class McpGateway {
-  private readonly registryStore: McpRegistryStore;
+  private readonly registryStore: McpRegistryRepository;
   private readonly fetchImpl: FetchLike;
   private readonly spawnImpl: SpawnLike;
   private readonly now: () => number;

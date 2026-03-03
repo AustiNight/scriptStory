@@ -1,8 +1,10 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { LOCAL_DATA_DIR } from "../config/paths.ts";
 import { HttpError } from "../http/errors.ts";
+import { LOCAL_DATA_DOCUMENTS } from "../localData/documents.ts";
+import {
+  FileLocalDataStorageAdapter,
+  type LocalDataStorageAdapter,
+} from "../localData/storage.ts";
 import {
   MCP_REGISTRY_SCHEMA_VERSION,
   MCP_SECRETS_SCHEMA_VERSION,
@@ -17,13 +19,20 @@ import {
   type McpServerSecrets,
 } from "./schema.ts";
 
+export interface McpRegistryRepository {
+  listServers(): Promise<McpServerRecord[]>;
+  getServerById(serverId: string): Promise<McpServerRecord | null>;
+  getSecretsForServer(serverId: string): Promise<McpServerSecrets>;
+  createServer(input: unknown): Promise<McpServerRecord>;
+  patchServer(serverId: string, input: unknown): Promise<McpServerRecord>;
+  deleteServer(serverId: string): Promise<boolean>;
+}
+
 export interface McpRegistryStoreOptions {
   registryFilePath?: string;
   secretsFilePath?: string;
+  storage?: LocalDataStorageAdapter;
 }
-
-const DEFAULT_REGISTRY_FILE_PATH = path.join(LOCAL_DATA_DIR, "mcp-servers.json");
-const DEFAULT_SECRETS_FILE_PATH = path.join(LOCAL_DATA_DIR, "mcp-secrets.json");
 
 const createEmptyRegistry = (): McpRegistryFile => ({
   schemaVersion: MCP_REGISTRY_SCHEMA_VERSION,
@@ -34,16 +43,6 @@ const createEmptySecrets = (): McpSecretsFile => ({
   schemaVersion: MCP_SECRETS_SCHEMA_VERSION,
   secretsByServerId: {},
 });
-
-const writeJsonFile = async (targetPath: string, value: unknown): Promise<void> => {
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.writeFile(targetPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-};
-
-const readJsonFile = async (targetPath: string): Promise<unknown> => {
-  const raw = await fs.readFile(targetPath, "utf8");
-  return JSON.parse(raw) as unknown;
-};
 
 const hasSecretForAuthType = (auth: McpServerAuth, secrets: McpServerSecrets): boolean => {
   if (auth.type === "bearer") {
@@ -72,38 +71,40 @@ const applySecretPresence = (auth: McpServerAuth, secrets: McpServerSecrets): Mc
   };
 };
 
-export class McpRegistryStore {
-  private readonly registryFilePath: string;
-  private readonly secretsFilePath: string;
+const buildDefaultStorage = (options: McpRegistryStoreOptions): LocalDataStorageAdapter => {
+  const documentPaths: Partial<Record<string, string>> = {};
+  if (options.registryFilePath) {
+    documentPaths[LOCAL_DATA_DOCUMENTS.mcpRegistry] = options.registryFilePath;
+  }
+  if (options.secretsFilePath) {
+    documentPaths[LOCAL_DATA_DOCUMENTS.mcpSecrets] = options.secretsFilePath;
+  }
+
+  return new FileLocalDataStorageAdapter({
+    ...(Object.keys(documentPaths).length > 0 ? { documentPaths } : {}),
+  });
+};
+
+export class McpRegistryStore implements McpRegistryRepository {
+  private readonly storage: LocalDataStorageAdapter;
   private writeQueue: Promise<void>;
 
   constructor(options: McpRegistryStoreOptions = {}) {
-    this.registryFilePath = options.registryFilePath || DEFAULT_REGISTRY_FILE_PATH;
-    this.secretsFilePath = options.secretsFilePath || DEFAULT_SECRETS_FILE_PATH;
+    this.storage = options.storage || buildDefaultStorage(options);
     this.writeQueue = Promise.resolve();
   }
 
   private async ensureFilesExist(): Promise<void> {
-    await fs.mkdir(path.dirname(this.registryFilePath), { recursive: true });
-    await fs.mkdir(path.dirname(this.secretsFilePath), { recursive: true });
-
-    try {
-      await fs.access(this.registryFilePath);
-    } catch {
-      await writeJsonFile(this.registryFilePath, createEmptyRegistry());
-    }
-
-    try {
-      await fs.access(this.secretsFilePath);
-    } catch {
-      await writeJsonFile(this.secretsFilePath, createEmptySecrets());
-    }
+    await Promise.all([
+      this.storage.ensureDocument(LOCAL_DATA_DOCUMENTS.mcpRegistry, createEmptyRegistry()),
+      this.storage.ensureDocument(LOCAL_DATA_DOCUMENTS.mcpSecrets, createEmptySecrets()),
+    ]);
   }
 
   private async readRegistryFile(): Promise<McpRegistryFile> {
     await this.ensureFilesExist();
     try {
-      const data = await readJsonFile(this.registryFilePath);
+      const data = await this.storage.readDocument(LOCAL_DATA_DOCUMENTS.mcpRegistry);
       return assertRegistryFileShape(data);
     } catch (error) {
       if (error instanceof HttpError) {
@@ -116,7 +117,7 @@ export class McpRegistryStore {
   private async readSecretsFile(): Promise<McpSecretsFile> {
     await this.ensureFilesExist();
     try {
-      const data = await readJsonFile(this.secretsFilePath);
+      const data = await this.storage.readDocument(LOCAL_DATA_DOCUMENTS.mcpSecrets);
       return assertSecretsFileShape(data);
     } catch (error) {
       if (error instanceof HttpError) {
@@ -127,11 +128,11 @@ export class McpRegistryStore {
   }
 
   private async writeRegistryFile(file: McpRegistryFile): Promise<void> {
-    await writeJsonFile(this.registryFilePath, file);
+    await this.storage.writeDocument(LOCAL_DATA_DOCUMENTS.mcpRegistry, file);
   }
 
   private async writeSecretsFile(file: McpSecretsFile): Promise<void> {
-    await writeJsonFile(this.secretsFilePath, file);
+    await this.storage.writeDocument(LOCAL_DATA_DOCUMENTS.mcpSecrets, file);
   }
 
   private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
@@ -187,6 +188,8 @@ export class McpRegistryStore {
 
       const server: McpServerRecord = {
         id,
+        scopeType: parsed.scopeType,
+        scopeId: parsed.scopeId,
         name: parsed.name,
         transport: parsed.transport,
         endpointOrCommand: parsed.endpointOrCommand,

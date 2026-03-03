@@ -1,5 +1,6 @@
 import {
   DEFAULT_PROVIDER_SELECTION,
+  GEMINI_LIVE_LOCAL_RUNTIME_UNAVAILABLE_MESSAGE,
   PROVIDER_CAPABILITY_MATRIX,
   sanitizeProviderSelection,
   type ProviderSelection,
@@ -61,10 +62,26 @@ export interface AiWriterProviderStatus {
   };
 }
 
+export interface AiTranscriptionProviderStatus {
+  id: ProviderSelection["transcription"];
+  enabled: boolean;
+  configured: boolean;
+  implemented: boolean;
+  available: boolean;
+  unavailableReason?: string;
+  capabilities: {
+    realtimeAudio: boolean;
+    streamingText: boolean;
+    toolCallSupport: boolean;
+    strictJsonMode: boolean;
+  };
+}
+
 export interface AiProviderCatalog {
   defaults: ProviderSelection;
   capabilities: typeof PROVIDER_CAPABILITY_MATRIX;
   writers: AiWriterProviderStatus[];
+  transcriptions: AiTranscriptionProviderStatus[];
 }
 
 export interface AiTelemetryAggregateBucket {
@@ -278,19 +295,170 @@ class ApiWriterProviderAdapter
 class GeminiTranscriptionProviderAdapter implements TranscriptionProvider {
   public readonly id = "gemini" as const;
   public readonly capabilities = PROVIDER_CAPABILITY_MATRIX.gemini;
+  private readonly onTranscript: TranscriptHandler;
   private isMuted = true;
+  private recognition: {
+    continuous: boolean;
+    interimResults: boolean;
+    maxAlternatives: number;
+    lang: string;
+    onstart: (() => void) | null;
+    onend: (() => void) | null;
+    onerror: ((event: { error?: string; message?: string }) => void) | null;
+    onresult: ((event: { resultIndex: number; results: any }) => void) | null;
+    start: () => void;
+    stop: () => void;
+    abort: () => void;
+  } | null = null;
+  private shouldReconnect = false;
+  private isListening = false;
+
+  constructor(onTranscript: TranscriptHandler) {
+    this.onTranscript = onTranscript;
+  }
+
+  private getSpeechRecognitionConstructor():
+    | (new () => {
+        continuous: boolean;
+        interimResults: boolean;
+        maxAlternatives: number;
+        lang: string;
+        onstart: (() => void) | null;
+        onend: (() => void) | null;
+        onerror: ((event: { error?: string; message?: string }) => void) | null;
+        onresult: ((event: { resultIndex: number; results: any }) => void) | null;
+        start: () => void;
+        stop: () => void;
+        abort: () => void;
+      })
+    | null {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    const speechWindow = window as Window & {
+      SpeechRecognition?: new () => any;
+      webkitSpeechRecognition?: new () => any;
+    };
+
+    return speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition || null;
+  }
+
+  private initializeRecognition() {
+    if (this.recognition) {
+      return;
+    }
+
+    const SpeechRecognitionCtor = this.getSpeechRecognitionConstructor();
+    if (!SpeechRecognitionCtor) {
+      throw new Error(GEMINI_LIVE_LOCAL_RUNTIME_UNAVAILABLE_MESSAGE);
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.lang = "en-US";
+
+    recognition.onstart = () => {
+      this.isListening = true;
+    };
+
+    recognition.onend = () => {
+      this.isListening = false;
+      if (this.shouldReconnect && !this.isMuted) {
+        window.setTimeout(() => {
+          this.startRecognition();
+        }, 200);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      const errorCode = (event?.error || "").toLowerCase();
+      if (errorCode === "not-allowed" || errorCode === "service-not-allowed") {
+        this.shouldReconnect = false;
+      }
+    };
+
+    recognition.onresult = (event) => {
+      const results = event?.results;
+      if (!results) {
+        return;
+      }
+
+      for (let index = event.resultIndex; index < results.length; index += 1) {
+        const result = results[index];
+        const transcript = result?.[0]?.transcript;
+        if (typeof transcript !== "string") {
+          continue;
+        }
+
+        const normalized = transcript.trim();
+        if (!normalized) {
+          continue;
+        }
+
+        this.onTranscript(`${normalized} `, true);
+      }
+    };
+
+    this.recognition = recognition;
+  }
+
+  private startRecognition() {
+    if (!this.recognition || this.isMuted || this.isListening || !this.shouldReconnect) {
+      return;
+    }
+
+    try {
+      this.recognition.start();
+    } catch {
+      // SpeechRecognition can throw InvalidStateError if start is called while active.
+    }
+  }
+
+  private stopRecognition() {
+    if (!this.recognition || !this.isListening) {
+      return;
+    }
+
+    try {
+      this.recognition.stop();
+    } catch {
+      // Safe no-op; adapter will reset on disconnect.
+    }
+  }
 
   public setMute(muted: boolean) {
     this.isMuted = muted;
+    if (this.isMuted) {
+      this.stopRecognition();
+      return;
+    }
+
+    this.startRecognition();
   }
 
   public async connect(_: SharedSessionType) {
-    throw new Error(
-      "Real-time Gemini Live sessions are not available in the local API runtime yet. Use transcript import or wait for provider runtime completion.",
-    );
+    this.shouldReconnect = true;
+    this.initializeRecognition();
+    if (!this.isMuted) {
+      this.startRecognition();
+    }
   }
 
   public async disconnect() {
+    this.shouldReconnect = false;
+    this.stopRecognition();
+    if (this.recognition) {
+      try {
+        this.recognition.abort();
+      } catch {
+        // Ignore browser-specific teardown errors.
+      }
+    }
+    this.recognition = null;
+    this.isListening = false;
     this.isMuted = true;
   }
 }
@@ -337,7 +505,11 @@ export class GeminiLiveService {
     };
 
     this.transcriptionProviders = {
-      gemini: new GeminiTranscriptionProviderAdapter(),
+      gemini: new GeminiTranscriptionProviderAdapter((text, isUser) => {
+        if (this.onTranscript) {
+          this.onTranscript(text, isUser);
+        }
+      }),
     };
   }
 

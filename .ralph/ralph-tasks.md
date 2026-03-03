@@ -116,11 +116,11 @@
   - [x] Add feature-flag regression checks proving app remains stable with new capabilities disabled.
   - [x] Acceptance Criteria: Provider + MCP features pass regression suite, quality rubric, and token-budget compliance checks with graceful degradation on failures.
 
-- [ ] Epic: Future Evolution Hooks (Per-User/Per-Workspace Readiness Without Implementing Multi-User Now)
-  - [ ] Introduce config domain model with explicit ownership fields (`scopeType`, `scopeId`) while using fixed local single-user defaults for MVP.
-  - [ ] Add migration-ready storage interfaces so `.local-data` persistence can be replaced later by database-backed per-user/per-workspace storage.
-  - [ ] Document upgrade path in `docs/multi-tenant-evolution.md`:
+- [x] Epic: Future Evolution Hooks (Per-User/Per-Workspace Readiness Without Implementing Multi-User Now)
+  - [x] Introduce config domain model with explicit ownership fields (`scopeType`, `scopeId`) while using fixed local single-user defaults for MVP.
+  - [x] Add migration-ready storage interfaces so `.local-data` persistence can be replaced later by database-backed per-user/per-workspace storage.
+  - [x] Document upgrade path in `docs/multi-tenant-evolution.md`:
     - What data moves to workspace scope.
     - What stays user scope.
     - Backward compatibility migration steps.
-  - [ ] Acceptance Criteria: MVP remains single-user local, but storage/contracts are structured to add user/workspace scoping without breaking existing configs.
+  - [x] Acceptance Criteria: MVP remains single-user local, but storage/contracts are structured to add user/workspace scoping without breaking existing configs.

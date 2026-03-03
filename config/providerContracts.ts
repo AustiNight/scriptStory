@@ -7,6 +7,9 @@ export type ProviderId = WriterProviderId | TranscriptionProviderId;
 
 export type SessionType = "SCRIBE" | "COMMANDER";
 
+export const GEMINI_LIVE_LOCAL_RUNTIME_UNAVAILABLE_MESSAGE =
+  "Real-time transcription is not supported in this browser runtime. Use Import to upload .txt, .docx, or .vtt transcripts.";
+
 export interface ProviderCapabilities {
   realtimeAudio: boolean;
   streamingText: boolean;

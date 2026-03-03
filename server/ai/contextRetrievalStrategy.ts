@@ -2,7 +2,7 @@ import type { ContextSourceInput } from "./types.ts";
 import type { McpServerRecord } from "../mcp/schema.ts";
 import type { SanitizedMcpContextSnippet } from "../mcp/sanitizeContext.ts";
 import { McpGateway, type McpGatewayQueryResult } from "../mcp/gateway.ts";
-import { McpRegistryStore } from "../mcp/registryStore.ts";
+import type { McpRegistryRepository } from "../mcp/registryStore.ts";
 import { McpRetrievalCache, hashRetrievalQuery } from "../mcp/retrievalCache.ts";
 
 export type ContextRetrievalMode = "auto-smart" | "manual-enrich";
@@ -504,14 +504,14 @@ export const attachToolCallContextMetadata = (
 
 export interface ContextRetrievalStrategyOptions {
   featureEnabled: boolean;
-  registryStore: McpRegistryStore;
+  registryStore: McpRegistryRepository;
   gateway: McpGateway;
   cache: McpRetrievalCache;
 }
 
 export class ContextRetrievalStrategy {
   private readonly featureEnabled: boolean;
-  private readonly registryStore: McpRegistryStore;
+  private readonly registryStore: McpRegistryRepository;
   private readonly gateway: McpGateway;
   private readonly cache: McpRetrievalCache;
 

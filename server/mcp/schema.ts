@@ -1,4 +1,9 @@
 import { HttpError } from "../http/errors.ts";
+import {
+  MVP_LOCAL_SINGLE_USER_SCOPE,
+  type ConfigOwnership,
+  type ConfigScopeType,
+} from "../config/configOwnership.ts";
 
 export const MCP_REGISTRY_SCHEMA_VERSION = 1;
 export const MCP_SECRETS_SCHEMA_VERSION = 1;
@@ -38,7 +43,7 @@ export interface McpAuthHeader {
 
 export type McpServerAuth = McpAuthNone | McpAuthBearer | McpAuthBasic | McpAuthHeader;
 
-export interface McpServerRecord {
+export interface McpServerRecord extends ConfigOwnership {
   id: string;
   name: string;
   transport: McpServerTransport;
@@ -69,7 +74,7 @@ export interface McpSecretsFile {
   secretsByServerId: Record<string, McpServerSecrets>;
 }
 
-export interface ParsedMcpServerCreateInput {
+export interface ParsedMcpServerCreateInput extends ConfigOwnership {
   id?: string;
   name: string;
   transport: McpServerTransport;
@@ -111,6 +116,16 @@ const DEFAULT_TIMEOUTS: McpServerTimeouts = Object.freeze({
 
 const DEFAULT_PRIORITY = 100;
 const DEFAULT_MAX_PAYLOAD = 16_000;
+
+const normalizeScopeType = (value: unknown): ConfigScopeType =>
+  value === "local-user" || value === "user" || value === "workspace"
+    ? value
+    : MVP_LOCAL_SINGLE_USER_SCOPE.scopeType;
+
+const normalizeScopeId = (value: unknown): string => {
+  const normalized = readString(value);
+  return normalized || MVP_LOCAL_SINGLE_USER_SCOPE.scopeId;
+};
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -493,9 +508,14 @@ export const parseMcpServerCreateInput = (value: unknown): ParsedMcpServerCreate
       "timeouts.failureThreshold",
       "create",
     ) ?? DEFAULT_TIMEOUTS.failureThreshold;
+  const scopeType = normalizeScopeType(record.scopeType);
+  const scopeId = normalizeScopeId(record.scopeId);
 
   return {
     id,
+    scopeType: scopeType === "local-user" ? scopeType : MVP_LOCAL_SINGLE_USER_SCOPE.scopeType,
+    scopeId:
+      scopeType === "local-user" ? scopeId : MVP_LOCAL_SINGLE_USER_SCOPE.scopeId,
     name,
     transport: transport as McpServerTransport,
     endpointOrCommand,
@@ -641,7 +661,21 @@ export const assertRegistryFileShape = (value: unknown): McpRegistryFile => {
 
   const servers = record.servers
     .filter((entry) => Boolean(entry) && typeof entry === "object")
-    .map((entry) => entry as McpServerRecord);
+    .map((entry) => {
+      const server = entry as Partial<McpServerRecord>;
+      const normalizedScopeType =
+        normalizeScopeType(server.scopeType) === "local-user"
+          ? "local-user"
+          : MVP_LOCAL_SINGLE_USER_SCOPE.scopeType;
+      return {
+        ...server,
+        scopeType: normalizedScopeType,
+        scopeId:
+          normalizedScopeType === "local-user"
+            ? normalizeScopeId(server.scopeId)
+            : MVP_LOCAL_SINGLE_USER_SCOPE.scopeId,
+      } as McpServerRecord;
+    });
 
   return {
     schemaVersion,
