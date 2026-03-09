@@ -40,10 +40,36 @@ const riskColors: Record<string, string> = {
     'Low': 'bg-green-600/50 border-green-400'
 };
 
+const formatGherkinForDisplay = (value: string): string => {
+  const compact = value
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!compact) return value;
+
+  const withLineBreaks = compact.replace(/\s+(given|when|then|and|but)\b/gi, (_, keyword) =>
+    `\n${String(keyword).charAt(0).toUpperCase()}${String(keyword).slice(1).toLowerCase()}`,
+  );
+
+  if (/^(given|when|then|and|but)\b/i.test(withLineBreaks)) {
+    return withLineBreaks.replace(/^(given|when|then|and|but)\b/i, (keyword) =>
+      `${keyword.charAt(0).toUpperCase()}${keyword.slice(1).toLowerCase()}`,
+    );
+  }
+
+  return withLineBreaks;
+};
+
 export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocused, isAdjacent, onClick, onFieldClick, onUpdate, focusedField }) => {
   
   let cardRotation = 'rotateX(0deg)';
   let yShift = '0px';
+  const isFieldEditing = isFocused && Boolean(focusedField);
   
   if (isFocused) {
     if (focusedField === 'title') {
@@ -80,10 +106,16 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
   const getFieldStyle = (fieldName: string) => {
     const isThisFocused = focusedField === fieldName;
     if (!isFocused) return {};
+    if (!isFieldEditing) {
+      return {
+        filter: 'none',
+        opacity: 1,
+      };
+    }
     
     if (isThisFocused) {
       return {
-        transform: 'translateZ(60px) scale(1.02)', 
+        transform: 'translateZ(0px)',
         filter: 'none', 
         backdropFilter: 'none', 
         opacity: 1,
@@ -98,8 +130,8 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
     } else {
       return {
         transform: 'translateZ(0px) scale(1)',
-        filter: 'blur(0px)', 
-        opacity: 0.4, 
+        filter: 'blur(1.5px)',
+        opacity: 0.35,
       };
     }
   };
@@ -117,7 +149,7 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
         absolute top-1/2 left-1/2 
         w-[700px] h-[760px] rounded-3xl border backdrop-blur-3xl p-6
         transition-all duration-700 ease-[cubic-bezier(0.23,1,0.32,1)]
-        ${typeColors[item.type]}
+        ${isFocused ? 'bg-[#111317]/95 border-white/20 shadow-[0_0_40px_rgba(0,0,0,0.55)]' : typeColors[item.type]}
         flex flex-col gap-4
         shadow-2xl
       `}
@@ -210,7 +242,7 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
                 <textarea
                     value={item.title}
                     onChange={(e) => onUpdate(item.id, { title: e.target.value })}
-                    className="w-full bg-transparent text-3xl font-light tracking-tight leading-none text-white outline-none resize-none overflow-hidden"
+                    className="w-full bg-[#0f0f11]/95 border border-white/10 rounded-md px-2 py-1 text-3xl font-light tracking-tight leading-none text-white outline-none resize-none overflow-hidden"
                     rows={item.title.length > 30 ? 2 : 1}
                     autoFocus={focusedField === 'title'}
                 />
@@ -234,7 +266,7 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
             <textarea
                 value={item.description}
                 onChange={(e) => onUpdate(item.id, { description: e.target.value })}
-                className="w-full h-[90%] bg-transparent text-base text-gray-200 leading-relaxed font-light resize-none outline-none"
+                className="w-full h-[90%] bg-[#0f0f11]/95 border border-white/10 rounded-md px-2 py-1 text-base text-gray-200 leading-relaxed font-light resize-none outline-none"
                 autoFocus={focusedField === 'description'}
             />
         ) : (
@@ -259,7 +291,7 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
                 <textarea 
                     value={item.stepsToReproduce?.join('\n') || ''}
                     onChange={(e) => onUpdate(item.id, { stepsToReproduce: e.target.value.split('\n') })}
-                    className="w-full h-full bg-transparent text-sm text-gray-300 font-mono outline-none resize-none"
+                    className="w-full h-full bg-[#0f0f11]/95 border border-white/10 rounded-md px-2 py-1 text-sm text-gray-300 font-mono outline-none resize-none"
                     placeholder="Enter steps, one per line..."
                 />
             ) : (
@@ -286,17 +318,20 @@ export const WorkItemCard: React.FC<Props> = ({ item, relationships = [], isFocu
                         className={`mt-1 w-3 h-3 rounded-full border shrink-0 transition-colors ${c.met ? 'bg-green-500 border-green-500' : 'border-gray-500 hover:border-white'}`} 
                      />
                      {isFocused ? (
-                         <input 
+                         <textarea 
                             value={c.text}
                             onChange={(e) => {
                                 const newCriteria = [...item.criteria];
                                 newCriteria[idx].text = e.target.value;
                                 onUpdate(item.id, { criteria: newCriteria });
                             }}
-                            className="bg-transparent w-full outline-none border-b border-transparent focus:border-white/20"
+                            rows={3}
+                            className="bg-[#0f0f11]/95 border border-white/10 rounded px-2 py-1 w-full outline-none focus:border-white/20 resize-y whitespace-pre-wrap"
                          />
                      ) : (
-                         <span className={c.met ? 'line-through opacity-50' : ''}>{c.text}</span>
+                         <span className={`whitespace-pre-line ${c.met ? 'line-through opacity-50' : ''}`}>
+                           {formatGherkinForDisplay(c.text)}
+                         </span>
                      )}
                    </li>
                  ))}

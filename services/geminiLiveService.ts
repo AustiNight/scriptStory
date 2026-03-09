@@ -292,9 +292,9 @@ class ApiWriterProviderAdapter
   }
 }
 
-class GeminiTranscriptionProviderAdapter implements TranscriptionProvider {
-  public readonly id = "gemini" as const;
-  public readonly capabilities = PROVIDER_CAPABILITY_MATRIX.gemini;
+class BrowserTranscriptionProviderAdapter implements TranscriptionProvider {
+  public readonly id = "browser" as const;
+  public readonly capabilities = PROVIDER_CAPABILITY_MATRIX.browser;
   private readonly onTranscript: TranscriptHandler;
   private isMuted = true;
   private recognition: {
@@ -505,7 +505,7 @@ export class GeminiLiveService {
     };
 
     this.transcriptionProviders = {
-      gemini: new GeminiTranscriptionProviderAdapter((text, isUser) => {
+      browser: new BrowserTranscriptionProviderAdapter((text, isUser) => {
         if (this.onTranscript) {
           this.onTranscript(text, isUser);
         }
@@ -552,6 +552,47 @@ export class GeminiLiveService {
     return PROVIDER_CAPABILITY_MATRIX;
   }
 
+  private async parseEnvelope<T>(
+    response: Response,
+  ): Promise<{ envelope: ApiEnvelope<T> | null; rawBody: string }> {
+    const rawBody = await response.text();
+    if (!rawBody.trim()) {
+      return { envelope: null, rawBody };
+    }
+
+    try {
+      return {
+        envelope: JSON.parse(rawBody) as ApiEnvelope<T>,
+        rawBody,
+      };
+    } catch {
+      return { envelope: null, rawBody };
+    }
+  }
+
+  private buildRequestFailureMessage<T>(
+    response: Response,
+    envelope: ApiEnvelope<T> | null,
+    rawBody: string,
+  ): string {
+    if (envelope && !envelope.ok && envelope.error?.message) {
+      return envelope.error.message;
+    }
+
+    if (!rawBody.trim()) {
+      if (response.status >= 500) {
+        return `Request failed (${response.status}): API server may be unavailable or restarting.`;
+      }
+      return `Request failed (${response.status}): empty response body.`;
+    }
+
+    return `Request failed (${response.status}): server returned a non-JSON response.`;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private async post<T>(path: string, payload: unknown): Promise<T> {
     const response = await fetch(path, {
       method: "POST",
@@ -561,32 +602,67 @@ export class GeminiLiveService {
       body: JSON.stringify(payload),
     });
 
-    const envelope = (await response.json()) as ApiEnvelope<T>;
+    const { envelope, rawBody } = await this.parseEnvelope<T>(response);
 
-    if (!response.ok || !envelope.ok) {
-      const message =
-        !envelope.ok && envelope.error?.message
-          ? envelope.error.message
-          : `Request failed (${response.status})`;
-      throw new Error(message);
+    if (!response.ok || !envelope || !envelope.ok) {
+      throw new Error(this.buildRequestFailureMessage(response, envelope, rawBody));
     }
 
     return envelope.data;
   }
 
   private async get<T>(path: string): Promise<T> {
-    const response = await fetch(path);
-    const envelope = (await response.json()) as ApiEnvelope<T>;
+    let lastError: Error | null = null;
 
-    if (!response.ok || !envelope.ok) {
-      const message =
-        !envelope.ok && envelope.error?.message
-          ? envelope.error.message
-          : `Request failed (${response.status})`;
-      throw new Error(message);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await fetch(path);
+        const { envelope, rawBody } = await this.parseEnvelope<T>(response);
+
+        if (!response.ok || !envelope || !envelope.ok) {
+          const isTransientEmptyServerError =
+            response.status >= 500 && !rawBody.trim();
+          if (isTransientEmptyServerError && attempt < 1) {
+            await this.sleep(200);
+            continue;
+          }
+          throw new Error(this.buildRequestFailureMessage(response, envelope, rawBody));
+        }
+
+        return envelope.data;
+      } catch (error) {
+        const normalized =
+          error instanceof Error
+            ? error
+            : new Error(String(error));
+        lastError = normalized;
+
+        const isNetworkFailure =
+          /fetch failed|failed to fetch|networkerror|network request failed/i.test(
+            normalized.message,
+          );
+        if (isNetworkFailure && attempt < 1) {
+          await this.sleep(200);
+          continue;
+        }
+        break;
+      }
     }
 
-    return envelope.data;
+    if (lastError) {
+      const isNetworkFailure =
+        /fetch failed|failed to fetch|networkerror|network request failed/i.test(
+          lastError.message,
+        );
+      if (isNetworkFailure) {
+        throw new Error(
+          "API request failed before receiving a response. Ensure the local API server is running.",
+        );
+      }
+      throw lastError;
+    }
+
+    throw new Error("Request failed: unknown API error.");
   }
 
   public async summarizeTranscript(transcript: string): Promise<string> {

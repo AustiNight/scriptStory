@@ -362,3 +362,93 @@ test("AnthropicWriter analyze: truncated stream safely falls back to non-stream 
     },
   ]);
 });
+
+test("AnthropicWriter analyze: decomposition follow-up pass expands epic into feature/story when missing", async () => {
+  let requestCount = 0;
+
+  const fetchImpl: AnthropicFetchLike = async () => {
+    requestCount += 1;
+
+    if (requestCount === 1) {
+      return createStreamResponse(
+        buildAnthropicStreamEvents([
+          {
+            name: "createWorkItem",
+            args: {
+              type: "EPIC",
+              title: "Improve onboarding flow",
+              description: "Create a modern onboarding workflow for first-time users.",
+              criteria: [
+                {
+                  text: "Given onboarding is available, when a new user signs in, then onboarding can be completed in UI.",
+                  met: false,
+                },
+              ],
+              tempId: "E1",
+            },
+          },
+        ]),
+      );
+    }
+
+    return createStreamResponse(
+      buildAnthropicStreamEvents([
+        {
+          name: "createWorkItem",
+          args: {
+            type: "FEATURE",
+            title: "Onboarding step orchestration",
+            description: "Define and persist a deterministic step sequence for onboarding.",
+            criteria: [
+              {
+                text: "Given onboarding step state exists, when user progresses, then next step is resolved and persisted.",
+                met: false,
+              },
+            ],
+            tempId: "F1",
+            parentTempId: "E1",
+          },
+        },
+        {
+          name: "createWorkItem",
+          args: {
+            type: "STORY",
+            title: "Complete profile basics in onboarding",
+            description:
+              "As a new user, I can submit profile basics in the onboarding UI and see my saved profile reflected immediately.",
+            criteria: [
+              {
+                text: "Given onboarding is active, when user submits profile basics, then API validates and persists data and UI reflects saved state.",
+                met: false,
+              },
+            ],
+            tempId: "S1",
+            parentTempId: "F1",
+          },
+        },
+      ]),
+    );
+  };
+
+  const writer = new AnthropicWriter("test-api-key", {
+    fetchImpl,
+    sleep: async () => undefined,
+    random: () => 0,
+  });
+
+  const toolCalls = await writer.analyzeMeetingTranscript(
+    "We need to improve onboarding for new users and break it into implementation slices.",
+    "",
+    [],
+    defaultAnthropicConfig,
+  );
+
+  const createTypes = toolCalls
+    .filter((call) => call.name === "createWorkItem")
+    .map((call) => String(call.args.type || "").toUpperCase());
+
+  assert.equal(requestCount, 2);
+  assert.ok(createTypes.includes("EPIC"));
+  assert.ok(createTypes.includes("FEATURE"));
+  assert.ok(createTypes.includes("STORY"));
+});

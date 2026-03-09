@@ -4,6 +4,7 @@ import { WorkItem, WorkItemType, Priority, Risk, CreateWorkItemArgs, UpdateWorkI
 import { geminiLive, SessionType, DEFAULT_CONTEXT_POLICY_CONFIG, sanitizeContextPolicyConfig, type AiDiagnosticsSnapshot, type AiProviderCatalog, type ContextPolicyConfig } from './services/geminiLiveService';
 import { DEFAULT_PROVIDER_SELECTION, sanitizeProviderSelection, type ProviderSelection, type TranscriptionProviderId, type WriterProviderId } from './config/providerContracts';
 import { DEFAULT_WRITER_PROVIDER_RUNTIME_CONFIG, sanitizeWriterProviderRuntimeConfig, type AnthropicWriterRuntimeConfig, type OpenAIWriterRuntimeConfig, type WriterProviderRuntimeConfig } from './config/providerRuntimeConfig';
+import { OPENAI_REASONING_EFFORTS, OPENAI_RESPONSES_MODEL_OPTIONS, doesOpenAiModelSupportTemperature, getOpenAiModelCapabilities, type OpenAiReasoningEffort } from './config/openAiModelCatalog';
 import { pushToADO } from './services/adoService';
 import { parseDocument } from './services/documentUtils';
 import Visualizer from './components/Visualizer';
@@ -180,6 +181,54 @@ const toApiErrorMessage = <T,>(envelope: ApiEnvelope<T>, status: number): string
   return `Request failed (${status})`;
 };
 
+const parseApiEnvelope = async <T,>(
+  response: Response,
+): Promise<{ envelope: ApiEnvelope<T> | null; rawBody: string }> => {
+  const rawBody = await response.text();
+  if (!rawBody.trim()) {
+    return { envelope: null, rawBody };
+  }
+
+  try {
+    return {
+      envelope: JSON.parse(rawBody) as ApiEnvelope<T>,
+      rawBody,
+    };
+  } catch {
+    return { envelope: null, rawBody };
+  }
+};
+
+const toApiFailureMessage = <T,>(
+  envelope: ApiEnvelope<T> | null,
+  status: number,
+  rawBody: string,
+): string => {
+  if (envelope && !envelope.ok) {
+    return toApiErrorMessage(envelope, status);
+  }
+
+  if (!rawBody.trim()) {
+    if (status >= 500) {
+      return `Request failed (${status}): API server may be unavailable or restarting.`;
+    }
+    return `Request failed (${status}): empty response body.`;
+  }
+
+  return `Request failed (${status}): server returned a non-JSON response.`;
+};
+
+const formatProviderDisplayName = (providerId: string): string => {
+  if (providerId === 'openai') return 'OpenAI';
+  if (providerId === 'anthropic') return 'Anthropic';
+  if (providerId === 'gemini') return 'Gemini';
+  if (providerId === 'browser') return 'Browser';
+  return providerId;
+};
+
+const formatReasoningEffortLabel = (value: OpenAiReasoningEffort): string =>
+  value.toUpperCase();
+
 const ANALYSIS_MIN_SEGMENT_CHARS = 120;
 const ANALYSIS_CARRYOVER_MAX_CHARS = 18_000;
 
@@ -302,6 +351,8 @@ export default function App() {
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpEditor, setMcpEditor] = useState<McpServerFormState>(() => createDefaultMcpServerForm());
   const [editingMcpServerId, setEditingMcpServerId] = useState<string | null>(null);
+  const isFocusedFieldEditing =
+      mode === AppMode.GROOMING && blurEnabled && Boolean(focusedItemId && focusedField);
   const [isSavingMcpServer, setIsSavingMcpServer] = useState(false);
   const [mcpTestResults, setMcpTestResults] = useState<Record<string, McpServerTestResult>>({});
   const [mcpTestingById, setMcpTestingById] = useState<Record<string, boolean>>({});
@@ -344,6 +395,43 @@ export default function App() {
                       ? 'Selected writer provider is not implemented in this runtime.'
                       : 'Selected writer provider is unavailable.'
           : null;
+
+  const selectedOpenAiModelIds = useMemo(
+      () => [
+          writerProviderRuntimeConfig.openai.summaryModel,
+          writerProviderRuntimeConfig.openai.analysisModel,
+          writerProviderRuntimeConfig.openai.refineModel,
+          writerProviderRuntimeConfig.openai.fallbackModel,
+      ],
+      [writerProviderRuntimeConfig.openai],
+  );
+
+  const selectedOpenAiModelCapabilities = useMemo(
+      () => selectedOpenAiModelIds.map(modelId => getOpenAiModelCapabilities(modelId)),
+      [selectedOpenAiModelIds],
+  );
+
+  const selectedOpenAiReasoningEfforts = useMemo(
+      () => {
+          const reasoningModels = selectedOpenAiModelCapabilities.filter(model => model.supportsReasoning);
+          if (reasoningModels.length === 0) {
+              return [] as OpenAiReasoningEffort[];
+          }
+
+          return OPENAI_REASONING_EFFORTS.filter(effort =>
+              reasoningModels.every(model => model.supportedReasoningEfforts.includes(effort)),
+          );
+      },
+      [selectedOpenAiModelCapabilities],
+  );
+
+  const openAiSupportsReasoningConfig = selectedOpenAiReasoningEfforts.length > 0;
+  const openAiSupportsTemperatureConfig = useMemo(
+      () => selectedOpenAiModelIds.some(modelId =>
+          doesOpenAiModelSupportTemperature(modelId, writerProviderRuntimeConfig.openai.reasoningEffort),
+      ),
+      [selectedOpenAiModelIds, writerProviderRuntimeConfig.openai.reasoningEffort],
+  );
 
   // -- Refs --
   const prevMeetingState = useRef(false);
@@ -395,6 +483,24 @@ export default function App() {
       localStorage.setItem('semantic_lens_writer_provider_runtime_config', JSON.stringify(writerProviderRuntimeConfig));
       geminiLive.setWriterProviderRuntimeConfig(writerProviderRuntimeConfig);
   }, [writerProviderRuntimeConfig]);
+  useEffect(() => {
+      if (!openAiSupportsReasoningConfig || selectedOpenAiReasoningEfforts.length === 0) {
+          return;
+      }
+
+      if (selectedOpenAiReasoningEfforts.includes(writerProviderRuntimeConfig.openai.reasoningEffort)) {
+          return;
+      }
+
+      const fallbackEffort = selectedOpenAiReasoningEfforts[0];
+      setWriterProviderRuntimeConfig(prev => sanitizeWriterProviderRuntimeConfig({
+          ...prev,
+          openai: {
+              ...prev.openai,
+              reasoningEffort: fallbackEffort,
+          },
+      }));
+  }, [openAiSupportsReasoningConfig, selectedOpenAiReasoningEfforts, writerProviderRuntimeConfig.openai.reasoningEffort]);
   useEffect(() => {
       localStorage.setItem('semantic_lens_context_policy', JSON.stringify(contextPolicyConfig));
       geminiLive.setContextPolicyConfig(contextPolicyConfig);
@@ -552,7 +658,7 @@ export default function App() {
 
   const deleteWorkItem = useCallback(async (args: DeleteArgs) => {
       setItems(prev => prev.filter(i => i.id !== args.id));
-      if (focusedItemId === args.id) setFocusedItemId(null);
+      if (focusedItemId === args.id) { setFocusedItemId(null); setFocusedField(null); }
       return `Deleted item`;
   }, [focusedItemId]);
 
@@ -562,7 +668,11 @@ export default function App() {
       setFocusedItemId(null); setFocusedField(null); return "Zoomed out.";
     }
     const target = items.find(i => i.id === args.targetId || i.title.toLowerCase().includes(args.targetId.toLowerCase()));
-    if (target) { setFocusedItemId(target.id); if (args.targetField) setFocusedField(args.targetField); return `Focused on ${target.title}`; }
+    if (target) {
+      setFocusedItemId(target.id);
+      setFocusedField(args.targetField || null);
+      return `Focused on ${target.title}`;
+    }
     return "Not found.";
   }, [items, mode]);
 
@@ -576,12 +686,39 @@ export default function App() {
   const handleSwitchMode = useCallback(async (args: SwitchModeArgs) => { setMode(args.mode.toUpperCase() === 'MEETING' ? AppMode.MEETING : AppMode.GROOMING); return `Switched.`; }, []);
 
   const requestApi = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
-      const response = await fetch(path, init);
-      const envelope = await response.json() as ApiEnvelope<T>;
-      if (!response.ok || !envelope.ok) {
-          throw new Error(toApiErrorMessage(envelope, response.status));
+      const method = (init?.method || 'GET').toUpperCase();
+      const maxAttempts = method === 'GET' ? 2 : 1;
+
+      let lastError: Error | null = null;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+          try {
+              const response = await fetch(path, init);
+              const { envelope, rawBody } = await parseApiEnvelope<T>(response);
+              const isTransientEmptyServerError = response.status >= 500 && !rawBody.trim();
+
+              if (!response.ok || !envelope || !envelope.ok) {
+                  if (isTransientEmptyServerError && attempt < maxAttempts - 1) {
+                      await new Promise(resolve => setTimeout(resolve, 200));
+                      continue;
+                  }
+                  throw new Error(toApiFailureMessage(envelope, response.status, rawBody));
+              }
+              return envelope.data;
+          } catch (error) {
+              const normalized = error instanceof Error ? error : new Error(String(error));
+              const isNetworkFailure = /fetch failed|failed to fetch|networkerror|network request failed/i.test(normalized.message);
+              if (isNetworkFailure && attempt < maxAttempts - 1) {
+                  await new Promise(resolve => setTimeout(resolve, 200));
+                  continue;
+              }
+              lastError = isNetworkFailure
+                  ? new Error('API request failed before receiving a response. Ensure the local API server is running.')
+                  : normalized;
+              break;
+          }
       }
-      return envelope.data;
+
+      throw lastError || new Error('Request failed: unknown API error.');
   }, []);
 
   const refreshProviderCatalog = useCallback(async () => {
@@ -882,7 +1019,7 @@ export default function App() {
 
   const handleBulkDelete = useCallback(() => {
       setItems(prev => prev.filter(item => !selectedItemIds.has(item.id)));
-      if (focusedItemId && selectedItemIds.has(focusedItemId)) setFocusedItemId(null);
+      if (focusedItemId && selectedItemIds.has(focusedItemId)) { setFocusedItemId(null); setFocusedField(null); }
       setSelectedItemIds(new Set());
   }, [selectedItemIds, focusedItemId]);
 
@@ -1166,7 +1303,7 @@ export default function App() {
         <div className="pointer-events-auto flex gap-6">
           <div>
               <h1 className="text-3xl font-extralight tracking-tighter opacity-90 flex items-center gap-3 font-serif">
-                 <span className="text-rose-300 font-medium">TRANSKRIBOIDA</span>
+                 <span className="text-rose-300 font-medium">ScriptStories</span>
               </h1>
               <div className="text-xs font-mono text-slate-500 mt-2 flex items-center gap-3">
                  <div className={`w-2 h-2 rounded-full ${activeSessionType ? 'bg-emerald-500 shadow-[0_0_10px_#10b981]' : 'bg-red-500'}`} />
@@ -1219,7 +1356,7 @@ export default function App() {
       </div>
       {showSettings && (
           <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-8">
-              <div className="bg-[#111] border border-white/10 rounded-2xl w-full max-w-6xl h-[88vh] flex flex-col">
+              <div className="bg-[#111] border border-white/10 rounded-2xl w-full max-w-6xl h-[88vh] flex flex-col min-h-0">
                   <div className="p-6 border-b border-white/10 flex justify-between items-center">
                       <h2 className="text-xl font-light">Project Configuration</h2>
                       <button onClick={() => setShowSettings(false)}>✕</button>
@@ -1232,7 +1369,7 @@ export default function App() {
                       <button onClick={() => setSettingsTab('ADO')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'ADO' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500'}`}>Integrations</button>
                       <button onClick={() => setSettingsTab('KNOWLEDGE')} className={`px-4 py-3 text-xs font-bold whitespace-nowrap ${settingsTab === 'KNOWLEDGE' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500'}`}>Knowledge Base</button>
                   </div>
-                  <div className="p-6 overflow-y-auto flex-1">
+                  <div className="p-6 overflow-y-auto overflow-x-hidden flex-1 min-h-0">
                       {settingsTab === 'AI_PROVIDERS' && (
                           <div className="space-y-6">
                               <div className="flex items-center justify-between">
@@ -1271,7 +1408,7 @@ export default function App() {
                                           value={providerSelection.transcription}
                                           onChange={e => handleTranscriptionProviderChange(e.target.value as TranscriptionProviderId)}
                                       >
-                                          <option value="gemini">Gemini</option>
+                                          <option value="browser">Browser</option>
                                       </select>
                                       <div className={`text-[11px] ${transcriptionUnavailableMessage ? 'text-rose-300' : 'text-slate-500'}`}>
                                           {transcriptionUnavailableMessage || 'Uses browser speech recognition for local live transcription.'}
@@ -1290,7 +1427,7 @@ export default function App() {
                                               {providerCatalog.writers.map(writer => (
                                                   <div key={writer.id} className="border border-white/10 rounded-lg p-3 bg-black/20">
                                                       <div className="flex justify-between items-center">
-                                                          <span className="text-sm font-semibold uppercase">{writer.id}</span>
+                                                          <span className="text-sm font-semibold uppercase">{formatProviderDisplayName(writer.id)}</span>
                                                           <span className={`text-[10px] px-2 py-1 rounded ${writer.available ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-600/40 text-slate-300'}`}>
                                                               {writer.available ? 'Available' : 'Unavailable'}
                                                           </span>
@@ -1308,7 +1445,7 @@ export default function App() {
                                               {providerCatalog.transcriptions.map(provider => (
                                                   <div key={provider.id} className="border border-white/10 rounded-lg p-3 bg-black/20">
                                                       <div className="flex justify-between items-center">
-                                                          <span className="text-sm font-semibold uppercase">{provider.id}</span>
+                                                          <span className="text-sm font-semibold uppercase">{formatProviderDisplayName(provider.id)}</span>
                                                           <span className={`text-[10px] px-2 py-1 rounded ${provider.available ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-600/40 text-slate-300'}`}>
                                                               {provider.available ? 'Available' : 'Unavailable'}
                                                           </span>
@@ -1328,14 +1465,56 @@ export default function App() {
                               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                                   <div className="bg-black/30 border border-white/10 rounded-xl p-4 space-y-3">
                                       <div className="text-xs font-mono uppercase tracking-wider text-slate-400">OpenAI Writer Runtime</div>
-                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Summary model" value={writerProviderRuntimeConfig.openai.summaryModel} onChange={e => handleOpenAiRuntimeConfigChange('summaryModel', e.target.value)} />
-                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Analysis model" value={writerProviderRuntimeConfig.openai.analysisModel} onChange={e => handleOpenAiRuntimeConfigChange('analysisModel', e.target.value)} />
-                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Refine model" value={writerProviderRuntimeConfig.openai.refineModel} onChange={e => handleOpenAiRuntimeConfigChange('refineModel', e.target.value)} />
-                                      <input type="text" className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Fallback model" value={writerProviderRuntimeConfig.openai.fallbackModel} onChange={e => handleOpenAiRuntimeConfigChange('fallbackModel', e.target.value)} />
+                                      <div className="text-[11px] text-slate-500">Only Responses-compatible models are available here.</div>
+                                      <div className="text-[11px] text-slate-500">Summary model</div>
+                                      <select className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={writerProviderRuntimeConfig.openai.summaryModel} onChange={e => handleOpenAiRuntimeConfigChange('summaryModel', e.target.value)}>
+                                          {OPENAI_RESPONSES_MODEL_OPTIONS.map(model => (
+                                              <option key={`summary-${model.id}`} value={model.id}>{model.label}</option>
+                                          ))}
+                                      </select>
+                                      <div className="text-[11px] text-slate-500">Analysis model</div>
+                                      <select className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={writerProviderRuntimeConfig.openai.analysisModel} onChange={e => handleOpenAiRuntimeConfigChange('analysisModel', e.target.value)}>
+                                          {OPENAI_RESPONSES_MODEL_OPTIONS.map(model => (
+                                              <option key={`analysis-${model.id}`} value={model.id}>{model.label}</option>
+                                          ))}
+                                      </select>
+                                      <div className="text-[11px] text-slate-500">Refine model</div>
+                                      <select className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={writerProviderRuntimeConfig.openai.refineModel} onChange={e => handleOpenAiRuntimeConfigChange('refineModel', e.target.value)}>
+                                          {OPENAI_RESPONSES_MODEL_OPTIONS.map(model => (
+                                              <option key={`refine-${model.id}`} value={model.id}>{model.label}</option>
+                                          ))}
+                                      </select>
+                                      <div className="text-[11px] text-slate-500">Fallback model</div>
+                                      <select className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" value={writerProviderRuntimeConfig.openai.fallbackModel} onChange={e => handleOpenAiRuntimeConfigChange('fallbackModel', e.target.value)}>
+                                          {OPENAI_RESPONSES_MODEL_OPTIONS.map(model => (
+                                              <option key={`fallback-${model.id}`} value={model.id}>{model.label}</option>
+                                          ))}
+                                      </select>
+                                      {openAiSupportsReasoningConfig && (
+                                          <>
+                                              <div className="text-[11px] text-slate-500">Reasoning effort</div>
+                                              <select
+                                                  className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+                                                  value={writerProviderRuntimeConfig.openai.reasoningEffort}
+                                                  onChange={e => handleOpenAiRuntimeConfigChange('reasoningEffort', e.target.value as OpenAiReasoningEffort)}
+                                              >
+                                                  {selectedOpenAiReasoningEfforts.map(effort => (
+                                                      <option key={`reasoning-${effort}`} value={effort}>{formatReasoningEffortLabel(effort)}</option>
+                                                  ))}
+                                              </select>
+                                          </>
+                                      )}
                                       <div className="grid grid-cols-2 gap-3">
-                                          <input type="number" min={0} max={2} step={0.1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Temperature" value={writerProviderRuntimeConfig.openai.temperature} onChange={e => handleOpenAiRuntimeConfigChange('temperature', Number(e.target.value))} />
-                                          <input type="number" min={64} max={4096} step={1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Max output tokens" value={writerProviderRuntimeConfig.openai.maxOutputTokens} onChange={e => handleOpenAiRuntimeConfigChange('maxOutputTokens', Number(e.target.value))} />
+                                          {openAiSupportsTemperatureConfig && (
+                                              <input type="number" min={0} max={2} step={0.1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Temperature" value={writerProviderRuntimeConfig.openai.temperature} onChange={e => handleOpenAiRuntimeConfigChange('temperature', Number(e.target.value))} />
+                                          )}
+                                          <input type="number" min={64} max={4096} step={1} className={`w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm ${openAiSupportsTemperatureConfig ? '' : 'col-span-2'}`} placeholder="Max output tokens" value={writerProviderRuntimeConfig.openai.maxOutputTokens} onChange={e => handleOpenAiRuntimeConfigChange('maxOutputTokens', Number(e.target.value))} />
                                       </div>
+                                      {!openAiSupportsTemperatureConfig && (
+                                          <div className="text-[11px] text-slate-500">
+                                              Temperature is hidden because none of the selected OpenAI models support it with the current reasoning level.
+                                          </div>
+                                      )}
                                       <div className="grid grid-cols-2 gap-3">
                                           <input type="number" min={5000} max={60000} step={1000} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Timeout ms" value={writerProviderRuntimeConfig.openai.requestTimeoutMs} onChange={e => handleOpenAiRuntimeConfigChange('requestTimeoutMs', Number(e.target.value))} />
                                           <input type="number" min={0} max={4} step={1} className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm" placeholder="Retries" value={writerProviderRuntimeConfig.openai.maxRetries} onChange={e => handleOpenAiRuntimeConfigChange('maxRetries', Number(e.target.value))} />
@@ -1695,7 +1874,7 @@ export default function App() {
                 <div className="flex justify-between items-center mb-4"><h3 className="text-xs font-mono text-purple-400">Identified Items</h3>{selectedItemIds.size > 0 && (<button onClick={handlePushToADO} disabled={isPushingToADO} className="bg-blue-600 px-3 py-1 rounded text-[10px] font-bold">Push {selectedItemIds.size}</button>)}</div>
                 <div className="flex-1 bg-black/20 border border-white/5 rounded-2xl p-6 overflow-y-auto grid grid-cols-2 gap-4 content-start">
                     {items.map((item) => (
-                         <div key={item.id} className={`p-4 border rounded-lg cursor-pointer ${selectedItemIds.has(item.id) ? 'border-blue-500 bg-blue-900/10' : 'border-white/10'}`} onClick={(e) => { if (!(e.target as any).closest('.chk')) { setFocusedItemId(item.id); setMode(AppMode.GROOMING); } }}>
+                         <div key={item.id} className={`p-4 border rounded-lg cursor-pointer ${selectedItemIds.has(item.id) ? 'border-blue-500 bg-blue-900/10' : 'border-white/10'}`} onClick={(e) => { if (!(e.target as any).closest('.chk')) { setFocusedItemId(item.id); setFocusedField(null); setMode(AppMode.GROOMING); } }}>
                              <div className="flex justify-between mb-2"><div className="flex items-center gap-2"><div className="chk w-4 h-4 rounded border" onClick={(e) => { e.stopPropagation(); toggleSelection(item.id); }}>{selectedItemIds.has(item.id) && '✓'}</div><span className="text-[10px] font-mono">{item.type}</span></div></div>
                              <h4 className="font-medium text-gray-200">{item.title}</h4>
                              <p className="text-xs text-gray-400 line-clamp-2">{item.description}</p>
@@ -1707,8 +1886,8 @@ export default function App() {
       )}
       {mode === AppMode.GROOMING && (
         <div className="absolute inset-0 flex items-center justify-center perspective-[1500px]">
-            <div className={`absolute inset-0 pt-24 px-12 overflow-y-auto transition-all ${focusedItemId ? 'opacity-30 blur-sm' : ''}`}>
-                <div className="grid grid-cols-3 gap-6 max-w-6xl mx-auto">{filteredItems.map(item => (<div key={item.id} onClick={() => setFocusedItemId(item.id)} className="bg-white/5 border border-white/10 p-6 rounded-xl cursor-pointer hover:border-blue-500"><h3>{item.title}</h3><p className="text-sm text-slate-500 line-clamp-2">{item.description}</p></div>))}</div>
+            <div className={`absolute inset-0 pt-24 px-12 overflow-y-auto transition-all ${isFocusedFieldEditing ? 'opacity-30 blur-sm' : ''}`}>
+                <div className="grid grid-cols-3 gap-6 max-w-6xl mx-auto">{filteredItems.map(item => (<div key={item.id} onClick={() => { setFocusedItemId(item.id); setFocusedField(null); }} className="bg-white/5 border border-white/10 p-6 rounded-xl cursor-pointer hover:border-blue-500"><h3>{item.title}</h3><p className="text-sm text-slate-500 line-clamp-2">{item.description}</p></div>))}</div>
             </div>
             {focusedItemId && (<>
                 <div className="absolute inset-0 z-10" onClick={() => { setFocusedItemId(null); setFocusedField(null); }} />

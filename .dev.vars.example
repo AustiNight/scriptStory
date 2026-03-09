@@ -1,0 +1,11 @@
+# Cloudflare Worker secrets / local dev vars
+GEMINI_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+
+# Optional provider flags
+ENABLE_OPENAI_WRITER=false
+ENABLE_ANTHROPIC_WRITER=false
+
+# Phase 1 Cloudflare deployment does not support MCP.
+ENABLE_MCP_CONTEXT=false

@@ -1,10 +1,15 @@
 import type { WriterProviderId } from "./providerContracts.ts";
+import {
+  sanitizeOpenAiResponsesModelId,
+  type OpenAiReasoningEffort,
+} from "./openAiModelCatalog.ts";
 
 export interface OpenAIWriterRuntimeConfig {
   summaryModel: string;
   analysisModel: string;
   refineModel: string;
   fallbackModel: string;
+  reasoningEffort: OpenAiReasoningEffort;
   temperature: number;
   maxOutputTokens: number;
   requestTimeoutMs: number;
@@ -32,6 +37,7 @@ export const DEFAULT_OPENAI_WRITER_RUNTIME_CONFIG: OpenAIWriterRuntimeConfig = O
   analysisModel: "gpt-4.1",
   refineModel: "gpt-4.1-mini",
   fallbackModel: "gpt-4.1-mini",
+  reasoningEffort: "none",
   temperature: 0.2,
   maxOutputTokens: 900,
   requestTimeoutMs: 20_000,
@@ -64,6 +70,14 @@ const asRecord = (value: unknown): Record<string, unknown> | null => {
 };
 
 const MODEL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/;
+const OPENAI_REASONING_EFFORT_SET = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
 
 const sanitizeModelId = (value: unknown, fallback: string): string => {
   if (typeof value !== "string") {
@@ -133,11 +147,36 @@ export const sanitizeOpenAIWriterRuntimeConfig = (value: unknown): OpenAIWriterR
     return { ...fallback };
   }
 
+  const summaryModel = sanitizeOpenAiResponsesModelId(
+    sanitizeModelId(record.summaryModel, fallback.summaryModel),
+    fallback.summaryModel,
+  );
+  const analysisModel = sanitizeOpenAiResponsesModelId(
+    sanitizeModelId(record.analysisModel, fallback.analysisModel),
+    fallback.analysisModel,
+  );
+  const refineModel = sanitizeOpenAiResponsesModelId(
+    sanitizeModelId(record.refineModel, fallback.refineModel),
+    fallback.refineModel,
+  );
+  const fallbackModel = sanitizeOpenAiResponsesModelId(
+    sanitizeModelId(record.fallbackModel, fallback.fallbackModel),
+    fallback.fallbackModel,
+  );
+  const reasoningEffortCandidate =
+    typeof record.reasoningEffort === "string"
+      ? record.reasoningEffort.trim().toLowerCase()
+      : "";
+  const reasoningEffort = OPENAI_REASONING_EFFORT_SET.has(reasoningEffortCandidate)
+    ? (reasoningEffortCandidate as OpenAiReasoningEffort)
+    : fallback.reasoningEffort;
+
   return {
-    summaryModel: sanitizeModelId(record.summaryModel, fallback.summaryModel),
-    analysisModel: sanitizeModelId(record.analysisModel, fallback.analysisModel),
-    refineModel: sanitizeModelId(record.refineModel, fallback.refineModel),
-    fallbackModel: sanitizeModelId(record.fallbackModel, fallback.fallbackModel),
+    summaryModel,
+    analysisModel,
+    refineModel,
+    fallbackModel,
+    reasoningEffort,
     temperature: clampNumber(record.temperature, fallback.temperature, 0, 2),
     maxOutputTokens: clampInteger(record.maxOutputTokens, fallback.maxOutputTokens, 64, 4096),
     requestTimeoutMs: clampInteger(record.requestTimeoutMs, fallback.requestTimeoutMs, 5_000, 60_000),

@@ -50,6 +50,14 @@ test("feature-flag regression: provider selection sanitization remains stable wi
   assert.deepEqual(selection, DEFAULT_PROVIDER_SELECTION);
 });
 
+test("feature-flag regression: legacy gemini transcription selection maps to browser", () => {
+  const selection = sanitizeProviderSelection({
+    writer: "gemini",
+    transcription: "gemini",
+  });
+  assert.equal(selection.transcription, "browser");
+});
+
 test("feature-flag regression: MCP retrieval returns safe empty result when disabled", async () => {
   const strategy = await createDisabledRetrievalStrategy();
   const result = await strategy.prepare(

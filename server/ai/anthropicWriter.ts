@@ -13,17 +13,21 @@ import {
   type NormalizedToolCall,
 } from "./toolCallContracts.ts";
 import type { ContextSourceInput, WorkItemInput } from "./types.ts";
+import {
+  buildAnalyzePrompt,
+  buildDecompositionFollowUpPrompt,
+  buildKnowledgeBaseText,
+  buildRefinePrompt,
+  buildSummarizePrompt,
+  isImageSource,
+  isTextSource,
+  mergeNormalizedToolCalls,
+  needsHierarchicalDecompositionPass,
+} from "./writerLogic.ts";
 
 const ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
-const MAX_SOURCE_CONTENT_CHARS = 15_000;
 const BASE_RETRY_DELAY_MS = 250;
-
-const isTextSource = (source: ContextSourceInput): boolean =>
-  !source.mimeType || source.mimeType.startsWith("text/") || source.mimeType === "application/json";
-
-const isImageSource = (source: ContextSourceInput): boolean =>
-  Boolean(source.mimeType && source.mimeType.startsWith("image/"));
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -321,54 +325,6 @@ const extractToolCallsFromStreamEvents = (
   };
 };
 
-const buildKnowledgeBaseText = (textSources: ContextSourceInput[]): string =>
-  textSources
-    .map((source) => {
-      const truncated = source.content.slice(0, MAX_SOURCE_CONTENT_CHARS);
-      const suffix =
-        source.content.length > MAX_SOURCE_CONTENT_CHARS ? "\n[truncated]" : "";
-      return `\n-- SOURCE: ${source.name} (${source.type}) --\n${truncated}${suffix}`;
-    })
-    .join("\n");
-
-const buildAnalyzePrompt = (
-  transcript: string,
-  projectContext: string,
-  knowledgeBaseText: string,
-): string => `
-You are an expert Agile Architect and Product Owner.
-
-MISSION:
-Analyze the transcript and generate a comprehensive set of structured work-item tool calls.
-Break large requirements into hierarchy (Epic -> Feature -> Story) where applicable.
-
-EXISTING vs NEW:
-1) Use image file naming clues:
-   - UAT/PROD/LIVE/DEMO implies existing features.
-   - PROTOTYPE/MOCKUP/DESIGN implies new features.
-2) Use transcript language clues:
-   - "Here we have", "As you can see", "This is working" implies demo.
-   - "We need to", "It should", "I want" implies new requirement.
-3) Behavior:
-   - Existing/demoed features: represent existing capability with story criteria marked met=true and create follow-up tasks/bugs as needed.
-   - New features: create EPIC/FEATURE/STORY with met=false criteria.
-
-VALIDATION RULES:
-- EPIC/FEATURE/STORY require: title, description, criteria[] with text + met.
-- BUG requires: title, description, stepsToReproduce[], expectedResult, actualResult.
-- TASK requires: title and description.
-- Use tempId/parentTempId for same-batch hierarchy links.
-
-EXISTING BOARD CONTEXT:
-${projectContext || "No active board context provided."}
-
-KNOWLEDGE BASE:
-${knowledgeBaseText || "No text documentation provided."}
-
-TRANSCRIPT:
-"${transcript}"
-`.trim();
-
 export class AnthropicWriter
   implements WriterProvider<ContextSourceInput, WorkItemInput, NormalizedToolCall>
 {
@@ -392,13 +348,7 @@ export class AnthropicWriter
     providerConfig?: unknown,
   ): Promise<string> {
     const config = sanitizeAnthropicWriterRuntimeConfig(providerConfig);
-    const prompt = `
-Summarize this meeting transcript in 1 or 2 concise sentences.
-Focus on work items, risks, and decisions.
-
-Transcript:
-"${transcript}"
-    `.trim();
+    const prompt = buildSummarizePrompt(transcript);
 
     return this.withRetryAndFallback(
       config,
@@ -444,56 +394,64 @@ Transcript:
       config,
       config.analysisModel,
       async (model) => {
-        const content: AnthropicRequestPayload["messages"][number]["content"] = [
-          { type: "text", text: prompt },
-        ];
+        const runAnalysisPass = async (
+          passPrompt: string,
+          includeImages: boolean,
+        ): Promise<NormalizedToolCall[]> => {
+          const content: AnthropicRequestPayload["messages"][number]["content"] = [
+            { type: "text", text: passPrompt },
+          ];
 
-        for (const image of imageSources) {
-          if (!image.mimeType || !image.content) {
-            continue;
+          if (includeImages) {
+            for (const image of imageSources) {
+              if (!image.mimeType || !image.content) {
+                continue;
+              }
+
+              content.push({
+                type: "text",
+                text: `[IMAGE CONTEXT: Filename=\"${image.name}\"]`,
+              });
+              content.push({
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: image.mimeType,
+                  data: image.content,
+                },
+              });
+            }
           }
 
-          content.push({
-            type: "text",
-            text: `[IMAGE CONTEXT: Filename="${image.name}"]`,
-          });
-          content.push({
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: image.mimeType,
-              data: image.content,
-            },
-          });
-        }
+          const payload: AnthropicRequestPayload = {
+            model,
+            messages: [{ role: "user", content }],
+            tools: ANTHROPIC_ANALYST_TOOLS,
+            tool_choice: { type: "auto" },
+            temperature: config.temperature,
+            max_tokens: config.maxOutputTokens,
+            stream: true,
+          };
 
-        const payload: AnthropicRequestPayload = {
-          model,
-          messages: [{ role: "user", content }],
-          tools: ANTHROPIC_ANALYST_TOOLS,
-          tool_choice: { type: "auto" },
-          temperature: config.temperature,
-          max_tokens: config.maxOutputTokens,
-          stream: true,
-        };
+          const streamedResult = await this.executeRequest(payload, config.requestTimeoutMs);
+          const streamExtraction = streamedResult.streamEvents
+            ? extractToolCallsFromStreamEvents(streamedResult.streamEvents)
+            : null;
 
-        const streamedResult = await this.executeRequest(payload, config.requestTimeoutMs);
-        const streamExtraction = streamedResult.streamEvents
-          ? extractToolCallsFromStreamEvents(streamedResult.streamEvents)
-          : null;
+          const rawCalls = streamExtraction
+            ? streamExtraction.calls
+            : streamedResult.jsonResponse
+              ? extractToolCallsFromMessage(streamedResult.jsonResponse)
+              : [];
+          const normalized = normalizeToolCalls(rawCalls);
+          if (normalized.length > 0) {
+            return normalized;
+          }
 
-        const rawCalls = streamExtraction
-          ? streamExtraction.calls
-          : streamedResult.jsonResponse
-            ? extractToolCallsFromMessage(streamedResult.jsonResponse)
-            : [];
-        const normalized = normalizeToolCalls(rawCalls);
+          if (!streamExtraction?.truncated) {
+            return normalized;
+          }
 
-        if (normalized.length > 0) {
-          return normalized;
-        }
-
-        if (streamExtraction?.truncated) {
           const recoveryPayload: AnthropicRequestPayload = {
             ...payload,
             stream: false,
@@ -503,9 +461,24 @@ Transcript:
             ? extractToolCallsFromMessage(recoveryResult.jsonResponse)
             : [];
           return normalizeToolCalls(recoveryCalls);
+        };
+
+        const normalized = await runAnalysisPass(prompt, true);
+        if (!needsHierarchicalDecompositionPass(normalized)) {
+          return normalized;
         }
 
-        return normalized;
+        try {
+          const decompositionPrompt = buildDecompositionFollowUpPrompt(
+            transcript,
+            projectContext,
+            normalized,
+          );
+          const decompositionCalls = await runAnalysisPass(decompositionPrompt, false);
+          return mergeNormalizedToolCalls(normalized, decompositionCalls);
+        } catch {
+          return normalized;
+        }
       },
     );
   }
@@ -518,19 +491,7 @@ Transcript:
     providerConfig?: unknown,
   ): Promise<string> {
     const config = sanitizeAnthropicWriterRuntimeConfig(providerConfig);
-    const prompt = `
-Refine the ${fieldName} field for this ${currentItem.type}.
-
-Current Title: ${currentItem.title}
-Current Description: ${currentItem.description}
-Project Context:
-${projectContext || "No additional context."}
-
-Transcript Input:
-"${rawTranscript}"
-
-Return only the refined field text.
-    `.trim();
+    const prompt = buildRefinePrompt(rawTranscript, fieldName, currentItem, projectContext);
 
     return this.withRetryAndFallback(
       config,

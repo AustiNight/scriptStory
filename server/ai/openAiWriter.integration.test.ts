@@ -17,6 +17,7 @@ const defaultOpenAiConfig = {
   analysisModel: "gpt-4.1",
   refineModel: "gpt-4.1-mini",
   fallbackModel: "gpt-4.1-mini",
+  reasoningEffort: "none",
   temperature: 0.2,
   maxOutputTokens: 900,
   requestTimeoutMs: 20_000,
@@ -246,4 +247,199 @@ test("OpenAiWriter analyze: invalid tool arguments are dropped by schema validat
   );
 
   assert.deepEqual(toolCalls, [{ name: "setVisualMode", args: { enableBlur: true } }]);
+});
+
+test("OpenAiWriter summarize: gpt-5.2 with low reasoning omits temperature", async () => {
+  let capturedPayload: Record<string, unknown> | null = null;
+
+  const fetchImpl: OpenAiFetchLike = async (_url, init) => {
+    capturedPayload = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({ output_text: "Summary output." }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+
+  const writer = new OpenAiWriter("test-api-key", {
+    fetchImpl,
+    sleep: async () => undefined,
+    random: () => 0,
+  });
+
+  const summary = await writer.summarizeTranscript(
+    "Summarize this content.",
+    {
+      ...defaultOpenAiConfig,
+      summaryModel: "gpt-5.2",
+      reasoningEffort: "low",
+    },
+  );
+
+  assert.equal(summary, "Summary output.");
+  assert.ok(capturedPayload);
+  assert.equal(capturedPayload?.model, "gpt-5.2");
+  assert.equal("temperature" in (capturedPayload || {}), false);
+  assert.deepEqual(capturedPayload?.reasoning, { effort: "low" });
+  assert.equal(capturedPayload?.max_output_tokens, 900);
+});
+
+test("OpenAiWriter summarize: gpt-5.2 with none reasoning includes temperature", async () => {
+  let capturedPayload: Record<string, unknown> | null = null;
+
+  const fetchImpl: OpenAiFetchLike = async (_url, init) => {
+    capturedPayload = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({ output_text: "Summary output." }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+
+  const writer = new OpenAiWriter("test-api-key", {
+    fetchImpl,
+    sleep: async () => undefined,
+    random: () => 0,
+  });
+
+  const summary = await writer.summarizeTranscript(
+    "Summarize this content.",
+    {
+      ...defaultOpenAiConfig,
+      summaryModel: "gpt-5.2",
+      reasoningEffort: "none",
+    },
+  );
+
+  assert.equal(summary, "Summary output.");
+  assert.ok(capturedPayload);
+  assert.equal(capturedPayload?.model, "gpt-5.2");
+  assert.equal(capturedPayload?.temperature, 0.2);
+  assert.deepEqual(capturedPayload?.reasoning, { effort: "none" });
+});
+
+test("OpenAiWriter summarize: unsupported chat-only model falls back to responses-safe model", async () => {
+  let capturedPayload: Record<string, unknown> | null = null;
+
+  const fetchImpl: OpenAiFetchLike = async (_url, init) => {
+    capturedPayload = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({ output_text: "Summary output." }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+
+  const writer = new OpenAiWriter("test-api-key", {
+    fetchImpl,
+    sleep: async () => undefined,
+    random: () => 0,
+  });
+
+  await writer.summarizeTranscript(
+    "Summarize this content.",
+    {
+      ...defaultOpenAiConfig,
+      summaryModel: "gpt-5.3-chat-latest",
+    },
+  );
+
+  assert.ok(capturedPayload);
+  assert.equal(capturedPayload?.model, "gpt-4.1-mini");
+});
+
+test("OpenAiWriter analyze: decomposition follow-up pass expands epic into feature/story when missing", async () => {
+  let requestCount = 0;
+
+  const fetchImpl: OpenAiFetchLike = async () => {
+    requestCount += 1;
+
+    if (requestCount === 1) {
+      return createStreamResponse(
+        buildOpenAiStreamEvents([
+          {
+            name: "createWorkItem",
+            args: {
+              type: "EPIC",
+              title: "Improve onboarding flow",
+              description: "Create a modern onboarding workflow for first-time users.",
+              criteria: [
+                {
+                  text: "Given onboarding is available, when a new user signs in, then onboarding can be completed in UI.",
+                  met: false,
+                },
+              ],
+              tempId: "E1",
+            },
+          },
+        ]),
+      );
+    }
+
+    return createStreamResponse(
+      buildOpenAiStreamEvents([
+        {
+          name: "createWorkItem",
+          args: {
+            type: "FEATURE",
+            title: "Onboarding step orchestration",
+            description: "Define and persist a deterministic step sequence for onboarding.",
+            criteria: [
+              {
+                text: "Given onboarding step state exists, when user progresses, then next step is resolved and persisted.",
+                met: false,
+              },
+            ],
+            tempId: "F1",
+            parentTempId: "E1",
+          },
+        },
+        {
+          name: "createWorkItem",
+          args: {
+            type: "STORY",
+            title: "Complete profile basics in onboarding",
+            description:
+              "As a new user, I can submit profile basics in the onboarding UI and see my saved profile reflected immediately.",
+            criteria: [
+              {
+                text: "Given onboarding is active, when user submits profile basics, then API validates and persists data and UI reflects saved state.",
+                met: false,
+              },
+            ],
+            tempId: "S1",
+            parentTempId: "F1",
+          },
+        },
+      ]),
+    );
+  };
+
+  const writer = new OpenAiWriter("test-api-key", {
+    fetchImpl,
+    sleep: async () => undefined,
+    random: () => 0,
+  });
+
+  const toolCalls = await writer.analyzeMeetingTranscript(
+    "We need to improve onboarding for new users and break it into implementation slices.",
+    "",
+    [],
+    defaultOpenAiConfig,
+  );
+
+  const createTypes = toolCalls
+    .filter((call) => call.name === "createWorkItem")
+    .map((call) => String(call.args.type || "").toUpperCase());
+
+  assert.equal(requestCount, 2);
+  assert.ok(createTypes.includes("EPIC"));
+  assert.ok(createTypes.includes("FEATURE"));
+  assert.ok(createTypes.includes("STORY"));
 });

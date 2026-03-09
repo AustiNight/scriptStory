@@ -26,7 +26,7 @@ const LOCAL_DATA_FILES = [
       ...MVP_LOCAL_SINGLE_USER_SCOPE,
       providerDefaults: {
         writer: "gemini",
-        transcription: "gemini",
+        transcription: "browser",
       },
       mcpDefaults: {
         policy: "auto-smart",

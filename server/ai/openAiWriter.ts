@@ -4,6 +4,11 @@ import {
   type OpenAIWriterRuntimeConfig,
 } from "../../config/providerRuntimeConfig.ts";
 import {
+  doesOpenAiModelSupportMaxOutputTokens,
+  doesOpenAiModelSupportTemperature,
+  resolveOpenAiReasoningEffortForModel,
+} from "../../config/openAiModelCatalog.ts";
+import {
   PROVIDER_CAPABILITY_MATRIX,
   type WriterProvider,
 } from "../../config/providerContracts.ts";
@@ -13,16 +18,20 @@ import {
   type NormalizedToolCall,
 } from "./toolCallContracts.ts";
 import type { ContextSourceInput, WorkItemInput } from "./types.ts";
+import {
+  buildAnalyzePrompt,
+  buildDecompositionFollowUpPrompt,
+  buildKnowledgeBaseText,
+  buildRefinePrompt,
+  buildSummarizePrompt,
+  isImageSource,
+  isTextSource,
+  mergeNormalizedToolCalls,
+  needsHierarchicalDecompositionPass,
+} from "./writerLogic.ts";
 
 const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
-const MAX_SOURCE_CONTENT_CHARS = 15_000;
 const BASE_RETRY_DELAY_MS = 250;
-
-const isTextSource = (source: ContextSourceInput): boolean =>
-  !source.mimeType || source.mimeType.startsWith("text/") || source.mimeType === "application/json";
-
-const isImageSource = (source: ContextSourceInput): boolean =>
-  Boolean(source.mimeType && source.mimeType.startsWith("image/"));
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -60,8 +69,11 @@ interface OpenAiRequestPayload {
         }
     >;
   }>;
-  temperature: number;
-  max_output_tokens: number;
+  temperature?: number;
+  max_output_tokens?: number;
+  reasoning?: {
+    effort: string;
+  };
   stream?: boolean;
   tools?: unknown[];
   tool_choice?: "auto" | "required" | "none";
@@ -353,53 +365,33 @@ const extractToolCallsFromStreamEvents = (
   return completedPayload ? extractToolCallsFromResponse(completedPayload) : [];
 };
 
-const buildKnowledgeBaseText = (textSources: ContextSourceInput[]): string =>
-  textSources
-    .map((source) => {
-      const truncated = source.content.slice(0, MAX_SOURCE_CONTENT_CHARS);
-      const suffix =
-        source.content.length > MAX_SOURCE_CONTENT_CHARS ? "\n[truncated]" : "";
-      return `\n-- SOURCE: ${source.name} (${source.type}) --\n${truncated}${suffix}`;
-    })
-    .join("\n");
+const buildOpenAiModelOptions = (
+  model: string,
+  config: OpenAIWriterRuntimeConfig,
+): Pick<OpenAiRequestPayload, "max_output_tokens" | "reasoning" | "temperature"> => {
+  const resolvedReasoningEffort = resolveOpenAiReasoningEffortForModel(
+    model,
+    config.reasoningEffort,
+  );
+  const supportsTemperature = doesOpenAiModelSupportTemperature(
+    model,
+    resolvedReasoningEffort || config.reasoningEffort,
+  );
 
-const buildAnalyzePrompt = (
-  transcript: string,
-  projectContext: string,
-  knowledgeBaseText: string,
-): string => `
-You are an expert Agile Architect and Product Owner.
-
-MISSION:
-Analyze the transcript and generate a comprehensive set of structured work-item tool calls.
-Break large requirements into hierarchy (Epic -> Feature -> Story) where applicable.
-
-EXISTING vs NEW:
-1) Use image file naming clues:
-   - UAT/PROD/LIVE/DEMO implies existing features.
-   - PROTOTYPE/MOCKUP/DESIGN implies new features.
-2) Use transcript language clues:
-   - "Here we have", "As you can see", "This is working" implies demo.
-   - "We need to", "It should", "I want" implies new requirement.
-3) Behavior:
-   - Existing/demoed features: represent existing capability with story criteria marked met=true and create follow-up tasks/bugs as needed.
-   - New features: create EPIC/FEATURE/STORY with met=false criteria.
-
-VALIDATION RULES:
-- EPIC/FEATURE/STORY require: title, description, criteria[] with text + met.
-- BUG requires: title, description, stepsToReproduce[], expectedResult, actualResult.
-- TASK requires: title and description.
-- Use tempId/parentTempId for same-batch hierarchy links.
-
-EXISTING BOARD CONTEXT:
-${projectContext || "No active board context provided."}
-
-KNOWLEDGE BASE:
-${knowledgeBaseText || "No text documentation provided."}
-
-TRANSCRIPT:
-"${transcript}"
-`.trim();
+  return {
+    ...(supportsTemperature ? { temperature: config.temperature } : {}),
+    ...(doesOpenAiModelSupportMaxOutputTokens(model)
+      ? { max_output_tokens: config.maxOutputTokens }
+      : {}),
+    ...(resolvedReasoningEffort
+      ? {
+          reasoning: {
+            effort: resolvedReasoningEffort,
+          },
+        }
+      : {}),
+  };
+};
 
 export class OpenAiWriter
   implements WriterProvider<ContextSourceInput, WorkItemInput, NormalizedToolCall>
@@ -424,18 +416,13 @@ export class OpenAiWriter
     providerConfig?: unknown,
   ): Promise<string> {
     const config = sanitizeOpenAIWriterRuntimeConfig(providerConfig);
-    const prompt = `
-Summarize this meeting transcript in 1 or 2 concise sentences.
-Focus on work items, risks, and decisions.
-
-Transcript:
-"${transcript}"
-    `.trim();
+    const prompt = buildSummarizePrompt(transcript);
 
     return this.withRetryAndFallback(
       config,
       config.summaryModel,
       async (model) => {
+        const modelOptions = buildOpenAiModelOptions(model, config);
         const payload: OpenAiRequestPayload = {
           model,
           input: [
@@ -444,8 +431,7 @@ Transcript:
               content: [{ type: "input_text", text: prompt }],
             },
           ],
-          temperature: config.temperature,
-          max_output_tokens: config.maxOutputTokens,
+          ...modelOptions,
         };
 
         const result = await this.executeRequest(payload, config.requestTimeoutMs);
@@ -476,6 +462,7 @@ Transcript:
       config,
       config.analysisModel,
       async (model) => {
+        const modelOptions = buildOpenAiModelOptions(model, config);
         const content: OpenAiRequestPayload["input"][number]["content"] = [
           { type: "input_text", text: prompt },
         ];
@@ -499,9 +486,8 @@ Transcript:
           model,
           input: [{ role: "user", content }],
           tools: OPENAI_ANALYST_TOOLS,
-          tool_choice: "auto",
-          temperature: config.temperature,
-          max_output_tokens: config.maxOutputTokens,
+          tool_choice: "required",
+          ...modelOptions,
           stream: true,
         };
 
@@ -516,7 +502,49 @@ Transcript:
               ? extractToolCallsFromResponse(result.jsonResponse)
               : [];
 
-        return normalizeToolCalls(rawCalls);
+        const normalizedCalls = normalizeToolCalls(rawCalls);
+        if (!needsHierarchicalDecompositionPass(normalizedCalls)) {
+          return normalizedCalls;
+        }
+
+        try {
+          const decompositionPrompt = buildDecompositionFollowUpPrompt(
+            transcript,
+            projectContext,
+            normalizedCalls,
+          );
+          const decompositionPayload: OpenAiRequestPayload = {
+            model,
+            input: [
+              {
+                role: "user",
+                content: [{ type: "input_text", text: decompositionPrompt }],
+              },
+            ],
+            tools: OPENAI_ANALYST_TOOLS,
+            tool_choice: "required",
+            ...modelOptions,
+            stream: true,
+          };
+
+          const decompositionResult = await this.executeRequest(
+            decompositionPayload,
+            config.requestTimeoutMs,
+          );
+          const decompositionStreamedCalls = decompositionResult.streamEvents
+            ? extractToolCallsFromStreamEvents(decompositionResult.streamEvents)
+            : [];
+          const decompositionRawCalls =
+            decompositionStreamedCalls.length > 0
+              ? decompositionStreamedCalls
+              : decompositionResult.jsonResponse
+                ? extractToolCallsFromResponse(decompositionResult.jsonResponse)
+                : [];
+          const decompositionCalls = normalizeToolCalls(decompositionRawCalls);
+          return mergeNormalizedToolCalls(normalizedCalls, decompositionCalls);
+        } catch {
+          return normalizedCalls;
+        }
       },
     );
   }
@@ -529,24 +557,13 @@ Transcript:
     providerConfig?: unknown,
   ): Promise<string> {
     const config = sanitizeOpenAIWriterRuntimeConfig(providerConfig);
-    const prompt = `
-Refine the ${fieldName} field for this ${currentItem.type}.
-
-Current Title: ${currentItem.title}
-Current Description: ${currentItem.description}
-Project Context:
-${projectContext || "No additional context."}
-
-Transcript Input:
-"${rawTranscript}"
-
-Return only the refined field text.
-    `.trim();
+    const prompt = buildRefinePrompt(rawTranscript, fieldName, currentItem, projectContext);
 
     return this.withRetryAndFallback(
       config,
       config.refineModel,
       async (model) => {
+        const modelOptions = buildOpenAiModelOptions(model, config);
         const payload: OpenAiRequestPayload = {
           model,
           input: [
@@ -555,8 +572,7 @@ Return only the refined field text.
               content: [{ type: "input_text", text: prompt }],
             },
           ],
-          temperature: config.temperature,
-          max_output_tokens: config.maxOutputTokens,
+          ...modelOptions,
         };
 
         const result = await this.executeRequest(payload, config.requestTimeoutMs);

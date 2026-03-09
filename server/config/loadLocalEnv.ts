@@ -3,6 +3,9 @@ import path from "node:path";
 import { PROJECT_ROOT } from "./paths.ts";
 
 type ParsedEnv = Record<string, string>;
+interface LoadLocalEnvOptions {
+  overrideProcessEnv?: boolean;
+}
 
 const ENV_LINE_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/;
 
@@ -48,8 +51,10 @@ const getEnvFileLoadOrder = (): string[] => {
 };
 
 let loaded = false;
+const shouldOverrideExistingEnv = (): boolean =>
+  (process.env.NODE_ENV?.trim().toLowerCase() || "development") !== "production";
 
-export const loadLocalEnv = (): string[] => {
+export const loadLocalEnv = (options: LoadLocalEnvOptions = {}): string[] => {
   if (loaded) {
     return [];
   }
@@ -68,8 +73,9 @@ export const loadLocalEnv = (): string[] => {
     loadedFiles.push(relativePath);
   }
 
+  const overrideProcessEnv = options.overrideProcessEnv ?? shouldOverrideExistingEnv();
   for (const [key, value] of Object.entries(mergedFromFiles)) {
-    if (process.env[key] === undefined) {
+    if (overrideProcessEnv || process.env[key] === undefined) {
       process.env[key] = value;
     }
   }

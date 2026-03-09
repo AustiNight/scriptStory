@@ -18,10 +18,14 @@ interface RawToolCall {
 }
 
 interface JsonSchema {
-  type: string;
-  properties?: Record<string, unknown>;
+  type?: string;
+  description?: string;
+  properties?: Record<string, JsonSchema>;
   required?: string[];
   additionalProperties?: boolean;
+  items?: JsonSchema;
+  anyOf?: JsonSchema[];
+  enum?: Array<string | number | boolean | null>;
 }
 
 interface OpenAiFunctionTool {
@@ -36,6 +40,32 @@ export interface AnthropicTool {
   name: NormalizedToolCallName;
   description: string;
   input_schema: JsonSchema;
+}
+
+interface GeminiSchema {
+  type?: string;
+  description?: string;
+  properties?: Record<string, GeminiSchema>;
+  required?: string[];
+  items?: GeminiSchema;
+  nullable?: boolean;
+  enum?: Array<string | number | boolean>;
+}
+
+interface GeminiFunctionDeclaration {
+  name: NormalizedToolCallName;
+  description: string;
+  parameters: GeminiSchema;
+}
+
+export interface GeminiTool {
+  functionDeclarations: GeminiFunctionDeclaration[];
+}
+
+interface AnalystToolDefinition {
+  name: NormalizedToolCallName;
+  description: string;
+  parameters: JsonSchema;
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
@@ -145,6 +175,74 @@ const normalizeCriteria = (
   return normalized.length > 0 ? normalized : undefined;
 };
 
+const HIERARCHICAL_WORK_ITEM_TYPES = new Set(["EPIC", "FEATURE", "STORY"]);
+
+const isHierarchicalWorkItemType = (type: string): boolean =>
+  HIERARCHICAL_WORK_ITEM_TYPES.has(type.trim().toUpperCase());
+
+const toGherkinCriterionText = (value: string): string => {
+  const cleaned = value
+    .trim()
+    .replace(/^[\-\d.)\s]+/, "")
+    .replace(/\s+/g, " ");
+
+  const ensureTrailingPeriod = (text: string): string => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return trimmed;
+    }
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  };
+
+  if (!cleaned) {
+    return "Given the user is in the relevant context, when the behavior is executed, then the expected result is visible in the UI.";
+  }
+
+  const hasGiven = /\bgiven\b/i.test(cleaned);
+  const hasWhen = /\bwhen\b/i.test(cleaned);
+  const hasThen = /\bthen\b/i.test(cleaned);
+  if (hasGiven && hasWhen && hasThen) {
+    return ensureTrailingPeriod(cleaned.replace(/^\s*given\b/i, "Given"));
+  }
+
+  const startsWithWhen = /^\s*when\b/i.test(cleaned);
+  const startsWithThen = /^\s*then\b/i.test(cleaned);
+  const startsWithGiven = /^\s*given\b/i.test(cleaned);
+  if (startsWithGiven || startsWithWhen || startsWithThen) {
+    return ensureTrailingPeriod(`Given the user is in the relevant context, ${cleaned
+      .replace(/^\s*given\b/i, "")
+      .replace(/^\s*when\b/i, "when")
+      .replace(/^\s*then\b/i, "then")
+      .trim()}`);
+  }
+
+  const clause = cleaned.charAt(0).toLowerCase() + cleaned.slice(1);
+  return ensureTrailingPeriod(
+    `Given the user is in the relevant context, when ${clause}, then the expected result is visible in the UI.`,
+  );
+};
+
+const ensureHierarchicalCriteria = (
+  criteria: Array<{ text: string; met: boolean }> | undefined,
+  title: string,
+  description: string,
+): Array<{ text: string; met: boolean }> => {
+  if (criteria && criteria.length > 0) {
+    return criteria.map((criterion) => ({
+      ...criterion,
+      text: toGherkinCriterionText(criterion.text),
+    }));
+  }
+
+  const seed = description.trim() || title.trim() || "the requested capability";
+  return [
+    {
+      text: toGherkinCriterionText(seed),
+      met: false,
+    },
+  ];
+};
+
 const normalizeCreateWorkItem = (args: Record<string, unknown>): Record<string, unknown> | null => {
   const type = readRequiredString(args, "type");
   const title = readRequiredString(args, "title");
@@ -154,14 +252,20 @@ const normalizeCreateWorkItem = (args: Record<string, unknown>): Record<string, 
     return null;
   }
 
+  const normalizedType = type.toUpperCase();
+  const normalizedCriteria = normalizeCriteria(args);
+  const finalCriteria = isHierarchicalWorkItemType(normalizedType)
+    ? ensureHierarchicalCriteria(normalizedCriteria, title, description)
+    : normalizedCriteria;
+
   return {
-    type,
+    type: normalizedType,
     title,
     description,
     ...(readOptionalString(args, "parentId") ? { parentId: readOptionalString(args, "parentId") } : {}),
     ...(readOptionalString(args, "priority") ? { priority: readOptionalString(args, "priority") } : {}),
     ...(readOptionalString(args, "risk") ? { risk: readOptionalString(args, "risk") } : {}),
-    ...(normalizeCriteria(args) ? { criteria: normalizeCriteria(args) } : {}),
+    ...(finalCriteria ? { criteria: finalCriteria } : {}),
     ...(readOptionalStringArray(args, "stepsToReproduce")
       ? { stepsToReproduce: readOptionalStringArray(args, "stepsToReproduce") }
       : {}),
@@ -201,7 +305,7 @@ const normalizeUpdateWorkItem = (args: Record<string, unknown>): Record<string, 
       ? { storyPoints: readOptionalFiniteNumber(args, "storyPoints") }
       : {}),
     ...(readOptionalString(args, "addCriteria")
-      ? { addCriteria: readOptionalString(args, "addCriteria") }
+      ? { addCriteria: toGherkinCriterionText(readOptionalString(args, "addCriteria") || "") }
       : {}),
     ...(readOptionalString(args, "addStep")
       ? { addStep: readOptionalString(args, "addStep") }
@@ -328,13 +432,11 @@ export const normalizeToolCalls = (calls: RawToolCall[]): NormalizedToolCall[] =
     .map((call) => normalizeToolCall(call.name, call.arguments))
     .filter((call): call is NormalizedToolCall => Boolean(call));
 
-export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
+export const ANALYST_TOOL_DEFINITIONS: AnalystToolDefinition[] = [
   {
-    type: "function",
     name: "createWorkItem",
     description:
-      "Create a new work item. Use criteria for EPIC/FEATURE/STORY and bug reproduction fields for BUG.",
-    strict: true,
+      "Create a new work item. For EPIC/FEATURE/STORY include Given/When/Then acceptance criteria. For BUG include reproduction fields.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -348,7 +450,7 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
         risk: { type: "string", description: "Optional Risk." },
         criteria: {
           type: "array",
-          description: "Acceptance Criteria. Mandatory for EPIC, FEATURE, STORY.",
+          description: "Acceptance Criteria in Given/When/Then format. Mandatory for EPIC, FEATURE, STORY.",
           items: {
             type: "object",
             additionalProperties: false,
@@ -377,10 +479,8 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
     },
   },
   {
-    type: "function",
     name: "updateWorkItem",
     description: "Update an existing work item.",
-    strict: true,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -402,10 +502,8 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
     },
   },
   {
-    type: "function",
     name: "deleteWorkItem",
     description: "Delete a specific work item permanently.",
-    strict: true,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -416,10 +514,8 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
     },
   },
   {
-    type: "function",
     name: "navigateFocus",
     description: "Focus on an item, field, or zoom out.",
-    strict: true,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -434,10 +530,8 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
     },
   },
   {
-    type: "function",
     name: "switchMode",
     description: "Switch application mode between MEETING and GROOMING.",
-    strict: true,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -448,10 +542,8 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
     },
   },
   {
-    type: "function",
     name: "filterWorkItems",
     description: "Filter or sort visible work items.",
-    strict: true,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -465,10 +557,8 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
     },
   },
   {
-    type: "function",
     name: "setVisualMode",
     description: "Control visual settings like background blur.",
-    strict: true,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -480,10 +570,93 @@ export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = [
   },
 ];
 
-export const ANTHROPIC_ANALYST_TOOLS: AnthropicTool[] = OPENAI_ANALYST_TOOLS.map(
+export const OPENAI_ANALYST_TOOLS: OpenAiFunctionTool[] = ANALYST_TOOL_DEFINITIONS.map(
+  ({ name, description, parameters }) => ({
+    type: "function",
+    name,
+    description,
+    strict: false,
+    parameters,
+  }),
+);
+
+export const ANTHROPIC_ANALYST_TOOLS: AnthropicTool[] = ANALYST_TOOL_DEFINITIONS.map(
   ({ name, description, parameters }) => ({
     name,
     description,
     input_schema: parameters,
   }),
 );
+
+const JSON_TO_GEMINI_TYPE: Record<string, string> = {
+  object: "OBJECT",
+  string: "STRING",
+  number: "NUMBER",
+  integer: "NUMBER",
+  boolean: "BOOLEAN",
+  array: "ARRAY",
+  null: "NULL",
+};
+
+const asGeminiType = (value: string | undefined): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const mapped = JSON_TO_GEMINI_TYPE[value.toLowerCase()];
+  return mapped || null;
+};
+
+const normalizeGeminiSchema = (schema: JsonSchema): GeminiSchema => {
+  if (Array.isArray(schema.anyOf) && schema.anyOf.length > 0) {
+    const nullable = schema.anyOf.some((entry) => String(entry.type || "").toLowerCase() === "null");
+    const preferred =
+      schema.anyOf.find((entry) => String(entry.type || "").toLowerCase() !== "null") ||
+      schema.anyOf[0];
+    const converted = normalizeGeminiSchema(preferred);
+    return nullable ? { ...converted, nullable: true } : converted;
+  }
+
+  const type = asGeminiType(schema.type) || "OBJECT";
+  const normalized: GeminiSchema = {
+    type,
+    ...(typeof schema.description === "string" ? { description: schema.description } : {}),
+    ...(Array.isArray(schema.enum)
+      ? {
+          enum: schema.enum.filter(
+            (value): value is string | number | boolean =>
+              typeof value === "string" || typeof value === "number" || typeof value === "boolean",
+          ),
+        }
+      : {}),
+  };
+
+  if (type === "OBJECT") {
+    const properties = schema.properties || {};
+    normalized.properties = Object.fromEntries(
+      Object.entries(properties).map(([propertyName, propertySchema]) => [
+        propertyName,
+        normalizeGeminiSchema(propertySchema),
+      ]),
+    );
+    if (Array.isArray(schema.required) && schema.required.length > 0) {
+      normalized.required = [...schema.required];
+    }
+  }
+
+  if (type === "ARRAY") {
+    normalized.items = schema.items ? normalizeGeminiSchema(schema.items) : { type: "STRING" };
+  }
+
+  return normalized;
+};
+
+export const GEMINI_ANALYST_TOOLS: GeminiTool[] = [
+  {
+    functionDeclarations: ANALYST_TOOL_DEFINITIONS.map(({ name, description, parameters }) => ({
+      name,
+      description,
+      parameters: normalizeGeminiSchema(parameters),
+    })),
+  },
+];

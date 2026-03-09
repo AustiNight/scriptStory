@@ -1,19 +1,8 @@
 import { Router } from "express";
 import type { NextFunction, Request, Response } from "express";
-import type { FeatureFlags } from "../../config/featureFlags.ts";
-import {
-  DEFAULT_PROVIDER_SELECTION,
-  PROVIDER_CAPABILITY_MATRIX,
-  isWriterProviderId,
-  type TranscriptionProviderId,
-  type WriterProviderId,
-  type WriterProvider,
-} from "../../config/providerContracts.ts";
+import type { WriterProviderId } from "../../config/providerContracts.ts";
 import { sendSuccess } from "../http/envelope.ts";
 import { HttpError } from "../http/errors.ts";
-import { GeminiWriter } from "./geminiWriter.ts";
-import { AnthropicWriter } from "./anthropicWriter.ts";
-import { OpenAiWriter } from "./openAiWriter.ts";
 import type { ContextSourceInput, WorkItemInput } from "./types.ts";
 import { McpRegistryStore } from "../mcp/registryStore.ts";
 import { McpGateway } from "../mcp/gateway.ts";
@@ -30,169 +19,15 @@ import {
   estimateTokens,
   type AiServerUsageEvent,
 } from "./telemetryStore.ts";
-
-export interface AiRuntimeConfig {
-  providers: {
-    geminiApiKey: string;
-    openaiApiKey: string;
-    anthropicApiKey: string;
-  };
-  featureFlags: FeatureFlags;
-}
-
-interface WriterRegistryEntry {
-  id: WriterProviderId;
-  adapter: WriterProvider<ContextSourceInput, WorkItemInput, any> | null;
-  enabled: boolean;
-  configured: boolean;
-  implemented: boolean;
-  requiredEnv: string;
-}
-
-interface TranscriptionRegistryEntry {
-  id: TranscriptionProviderId;
-  enabled: boolean;
-  configured: boolean;
-  implemented: boolean;
-  unavailableReason?: string;
-  requiredEnv: string | null;
-}
-
-const buildWriterRegistry = (
-  runtimeConfig: AiRuntimeConfig,
-): Record<WriterProviderId, WriterRegistryEntry> => ({
-  gemini: {
-    id: "gemini",
-    adapter: runtimeConfig.providers.geminiApiKey
-      ? new GeminiWriter(runtimeConfig.providers.geminiApiKey)
-      : null,
-    enabled: true,
-    configured: Boolean(runtimeConfig.providers.geminiApiKey),
-    implemented: true,
-    requiredEnv: "GEMINI_API_KEY",
-  },
-  openai: {
-    id: "openai",
-    adapter: runtimeConfig.providers.openaiApiKey
-      ? new OpenAiWriter(runtimeConfig.providers.openaiApiKey)
-      : null,
-    enabled: runtimeConfig.featureFlags.ENABLE_OPENAI_WRITER,
-    configured: Boolean(runtimeConfig.providers.openaiApiKey),
-    implemented: true,
-    requiredEnv: "OPENAI_API_KEY",
-  },
-  anthropic: {
-    id: "anthropic",
-    adapter: runtimeConfig.providers.anthropicApiKey
-      ? new AnthropicWriter(runtimeConfig.providers.anthropicApiKey)
-      : null,
-    enabled: runtimeConfig.featureFlags.ENABLE_ANTHROPIC_WRITER,
-    configured: Boolean(runtimeConfig.providers.anthropicApiKey),
-    implemented: true,
-    requiredEnv: "ANTHROPIC_API_KEY",
-  },
-});
-
-const buildTranscriptionRegistry = (): Record<
-  TranscriptionProviderId,
-  TranscriptionRegistryEntry
-> => ({
-  gemini: {
-    id: "gemini",
-    enabled: true,
-    configured: true,
-    implemented: true,
-    requiredEnv: null,
-  },
-});
-
-const getWriterProviderStatus = (entry: WriterRegistryEntry) => ({
-  id: entry.id,
-  enabled: entry.enabled,
-  configured: entry.configured,
-  implemented: entry.implemented,
-  available: entry.enabled && entry.configured && entry.implemented && Boolean(entry.adapter),
-  capabilities: PROVIDER_CAPABILITY_MATRIX[entry.id],
-});
-
-const getTranscriptionProviderStatus = (entry: TranscriptionRegistryEntry) => {
-  const available = entry.enabled && entry.configured && entry.implemented;
-  let unavailableReason: string | undefined;
-
-  if (!available) {
-    if (!entry.enabled) {
-      unavailableReason = `Provider "${entry.id}" is disabled by feature flag.`;
-    } else if (!entry.configured && entry.requiredEnv) {
-      unavailableReason = `Provider "${entry.id}" key is not configured on the server. Missing ${entry.requiredEnv}.`;
-    } else if (!entry.implemented) {
-      unavailableReason =
-        entry.unavailableReason ||
-        `Provider "${entry.id}" transcription adapter is not implemented yet.`;
-    } else {
-      unavailableReason = `Provider "${entry.id}" is unavailable in this runtime.`;
-    }
-  }
-
-  return {
-    id: entry.id,
-    enabled: entry.enabled,
-    configured: entry.configured,
-    implemented: entry.implemented,
-    available,
-    ...(unavailableReason ? { unavailableReason } : {}),
-    capabilities: PROVIDER_CAPABILITY_MATRIX[entry.id],
-  };
-};
-
-const readRequestedWriterProvider = (request: Request): WriterProviderId => {
-  const candidate = request.body?.provider;
-  if (candidate === undefined || candidate === null || candidate === "") {
-    return DEFAULT_PROVIDER_SELECTION.writer;
-  }
-
-  if (!isWriterProviderId(candidate)) {
-    throw new HttpError(400, "INVALID_REQUEST", "Field \"provider\" is invalid.", {
-      validProviders: Object.keys(PROVIDER_CAPABILITY_MATRIX),
-      receivedProvider: candidate,
-    });
-  }
-
-  return candidate;
-};
-
-const requireWriterProvider = (
-  registry: Record<WriterProviderId, WriterRegistryEntry>,
-  providerId: WriterProviderId,
-): WriterProvider<ContextSourceInput, WorkItemInput, any> => {
-  const entry = registry[providerId];
-
-  if (!entry.enabled) {
-    throw new HttpError(403, "FEATURE_DISABLED", `Provider "${providerId}" is disabled by feature flag.`, {
-      provider: providerId,
-      requiredFlag:
-        providerId === "openai"
-          ? "ENABLE_OPENAI_WRITER"
-          : providerId === "anthropic"
-            ? "ENABLE_ANTHROPIC_WRITER"
-            : null,
-    });
-  }
-
-  if (!entry.implemented) {
-    throw new HttpError(501, "PROVIDER_NOT_IMPLEMENTED", `Provider "${providerId}" adapter is not implemented yet.`, {
-      provider: providerId,
-    });
-  }
-
-  if (!entry.configured || !entry.adapter) {
-    throw new HttpError(503, "PROVIDER_NOT_CONFIGURED", `Provider "${providerId}" key is not configured on the server.`, {
-      provider: providerId,
-      missingEnv: entry.requiredEnv,
-    });
-  }
-
-  return entry.adapter;
-};
+import {
+  buildProviderCatalog,
+  buildTranscriptionRegistry,
+  buildWriterRegistry,
+  readProviderHint,
+  readRequestedWriterProvider,
+  requireWriterProvider,
+  type AiRuntimeConfig,
+} from "./providerRegistry.ts";
 
 type RouteHandler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
 
@@ -250,10 +85,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
 
   const summarizeHandler: RouteHandler = async (req, res, next) => {
     const startedAt = Date.now();
-    const providerHint =
-      typeof req.body?.provider === "string" && req.body.provider.trim().length > 0
-        ? req.body.provider.trim()
-        : DEFAULT_PROVIDER_SELECTION.writer;
+    const providerHint = readProviderHint(req.body);
     const transcript = typeof req.body?.transcript === "string" ? req.body.transcript.trim() : "";
     let providerLabel = providerHint;
 
@@ -262,7 +94,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
         throw new HttpError(400, "INVALID_REQUEST", "Field \"transcript\" is required.");
       }
 
-      const providerId = readRequestedWriterProvider(req);
+      const providerId = readRequestedWriterProvider(req.body);
       const provider = requireWriterProvider(writerRegistry, providerId);
       providerLabel = provider.id;
       const summary = await provider.summarizeTranscript(transcript, req.body?.providerConfig);
@@ -293,10 +125,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
 
   const analyzeHandler: RouteHandler = async (req, res, next) => {
     const startedAt = Date.now();
-    const providerHint =
-      typeof req.body?.provider === "string" && req.body.provider.trim().length > 0
-        ? req.body.provider.trim()
-        : DEFAULT_PROVIDER_SELECTION.writer;
+    const providerHint = readProviderHint(req.body);
     const transcript = typeof req.body?.transcript === "string" ? req.body.transcript : "";
     const projectContext = typeof req.body?.projectContext === "string" ? req.body.projectContext : "";
     const contextSources = Array.isArray(req.body?.contextSources)
@@ -314,7 +143,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
         throw new HttpError(400, "INVALID_REQUEST", "Field \"transcript\" is required.");
       }
 
-      const providerId = readRequestedWriterProvider(req);
+      const providerId = readRequestedWriterProvider(req.body);
       const provider = requireWriterProvider(writerRegistry, providerId);
       providerLabel = provider.id;
       const firstRetrieval = await contextRetrieval.prepare(
@@ -444,10 +273,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
 
   const refineHandler: RouteHandler = async (req, res, next) => {
     const startedAt = Date.now();
-    const providerHint =
-      typeof req.body?.provider === "string" && req.body.provider.trim().length > 0
-        ? req.body.provider.trim()
-        : DEFAULT_PROVIDER_SELECTION.writer;
+    const providerHint = readProviderHint(req.body);
     const rawTranscript =
       typeof req.body?.rawTranscript === "string" ? req.body.rawTranscript.trim() : "";
     const fieldName = typeof req.body?.fieldName === "string" ? req.body.fieldName.trim() : "";
@@ -467,7 +293,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
         );
       }
 
-      const providerId = readRequestedWriterProvider(req);
+      const providerId = readRequestedWriterProvider(req.body);
       const provider = requireWriterProvider(writerRegistry, providerId);
       providerLabel = provider.id;
       const refinedText = await provider.refineFieldContent(
@@ -511,14 +337,7 @@ export const createAiRouter = (runtimeConfig: AiRuntimeConfig): Router => {
   };
 
   router.get("/providers", (_req, res) => {
-    sendSuccess(res, {
-      defaults: DEFAULT_PROVIDER_SELECTION,
-      capabilities: PROVIDER_CAPABILITY_MATRIX,
-      writers: Object.values(writerRegistry).map(getWriterProviderStatus),
-      transcriptions: Object.values(transcriptionRegistry).map(
-        getTranscriptionProviderStatus,
-      ),
-    });
+    sendSuccess(res, buildProviderCatalog(writerRegistry, transcriptionRegistry));
   });
 
   router.post("/summarize", summarizeHandler);

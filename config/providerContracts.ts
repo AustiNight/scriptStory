@@ -1,5 +1,5 @@
 export const WRITER_PROVIDER_IDS = ["gemini", "openai", "anthropic"] as const;
-export const TRANSCRIPTION_PROVIDER_IDS = ["gemini"] as const;
+export const TRANSCRIPTION_PROVIDER_IDS = ["browser"] as const;
 
 export type WriterProviderId = (typeof WRITER_PROVIDER_IDS)[number];
 export type TranscriptionProviderId = (typeof TRANSCRIPTION_PROVIDER_IDS)[number];
@@ -73,22 +73,46 @@ export const PROVIDER_CAPABILITY_MATRIX: Record<ProviderId, ProviderCapabilities
     toolCallSupport: true,
     strictJsonMode: false,
   }),
+  browser: Object.freeze({
+    realtimeAudio: true,
+    streamingText: true,
+    toolCallSupport: false,
+    strictJsonMode: false,
+  }),
 });
 
 export const DEFAULT_PROVIDER_SELECTION: ProviderSelection = Object.freeze({
   writer: "gemini",
-  transcription: "gemini",
+  transcription: "browser",
 });
 
 const asSet = <T extends string>(values: readonly T[]): Set<string> => new Set(values);
 const WRITER_PROVIDER_ID_SET = asSet(WRITER_PROVIDER_IDS);
 const TRANSCRIPTION_PROVIDER_ID_SET = asSet(TRANSCRIPTION_PROVIDER_IDS);
+const LEGACY_TRANSCRIPTION_PROVIDER_ALIASES: Record<string, TranscriptionProviderId> =
+  Object.freeze({
+    gemini: "browser",
+  });
 
 export const isWriterProviderId = (value: unknown): value is WriterProviderId =>
   typeof value === "string" && WRITER_PROVIDER_ID_SET.has(value);
 
 export const isTranscriptionProviderId = (value: unknown): value is TranscriptionProviderId =>
   typeof value === "string" && TRANSCRIPTION_PROVIDER_ID_SET.has(value);
+
+const resolveTranscriptionProviderId = (
+  value: unknown,
+): TranscriptionProviderId | null => {
+  if (isTranscriptionProviderId(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  return LEGACY_TRANSCRIPTION_PROVIDER_ALIASES[value] || null;
+};
 
 export const sanitizeProviderSelection = (value: unknown): ProviderSelection => {
   if (!value || typeof value !== "object") {
@@ -100,8 +124,8 @@ export const sanitizeProviderSelection = (value: unknown): ProviderSelection => 
     writer: isWriterProviderId(candidate.writer)
       ? candidate.writer
       : DEFAULT_PROVIDER_SELECTION.writer,
-    transcription: isTranscriptionProviderId(candidate.transcription)
-      ? candidate.transcription
-      : DEFAULT_PROVIDER_SELECTION.transcription,
+    transcription:
+      resolveTranscriptionProviderId(candidate.transcription) ||
+      DEFAULT_PROVIDER_SELECTION.transcription,
   };
 };
