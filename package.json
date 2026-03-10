@@ -16,7 +16,7 @@
     "check:guardrails": "bash ./scripts/check-guardrails.sh",
     "check": "npm run check:guardrails",
     "verify": "npm run check && npm run build",
-    "build": "vite build",
+    "build": "vite build && node ./scripts/copy-static-assets.mjs",
     "preview": "vite preview",
     "deploy:cloudflare": "npm run build && wrangler deploy"
   },

@@ -1,9 +1,10 @@
 {
   "title": "ScriptStories",
   "description": "An agile Azure Dev Ops work item automation assistant.  Voice-to-Epic-Feature-UserStory-Task-Bug.",
-  "imageUrl": "https://..../preview-carousel.png?v=1",
+  "imageUrl": "https://scriptstory.jonathan-aulson.workers.dev/preview-carousel.png?v=1",
   "tags": ["Azure", "AI", "voice-to-text"],
   "projectKey": "scriptStory",
-  "repoUrl": "https://github.com/AustiNight/scriptStory.git",
+  "repoUrl": "https://github.com/AustiNight/scriptStory",
+  "readmeUrl": "https://raw.githubusercontent.com/AustiNight/scriptStory/main/README.md",
   "carouselText": "Empowering teams to quickly capture and organize work items through natural language voice commands, streamlining project management and boosting productivity."
 }
