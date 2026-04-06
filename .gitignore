@@ -18,6 +18,10 @@ dist-ssr
 .local-data/
 .wrangler/
 
+# Claude Code local files
+.claude-context
+.remember/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
