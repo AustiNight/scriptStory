@@ -642,30 +642,30 @@ const handleApiRequest = async (request: Request, env: CloudflareEnv): Promise<R
     }
 
     if (request.method === "POST" && url.pathname === "/api/ai/summarize") {
-      return handleSummarize(requestId, await readJsonBody(request), writerRegistry);
+      return await handleSummarize(requestId, await readJsonBody(request), writerRegistry);
     }
 
     if (request.method === "POST" && url.pathname === "/api/ai/analyze") {
-      return handleAnalyze(requestId, await readJsonBody(request), writerRegistry);
+      return await handleAnalyze(requestId, await readJsonBody(request), writerRegistry);
     }
 
     if (request.method === "POST" && url.pathname === "/api/ai/refine") {
-      return handleRefine(requestId, await readJsonBody(request), writerRegistry);
+      return await handleRefine(requestId, await readJsonBody(request), writerRegistry);
     }
 
     if (request.method === "POST" && url.pathname === "/api/ai/gemini/summarize") {
       const body = asRecord(await readJsonBody(request)) || {};
-      return handleSummarize(requestId, { ...body, provider: "gemini" }, writerRegistry);
+      return await handleSummarize(requestId, { ...body, provider: "gemini" }, writerRegistry);
     }
 
     if (request.method === "POST" && url.pathname === "/api/ai/gemini/analyze") {
       const body = asRecord(await readJsonBody(request)) || {};
-      return handleAnalyze(requestId, { ...body, provider: "gemini" }, writerRegistry);
+      return await handleAnalyze(requestId, { ...body, provider: "gemini" }, writerRegistry);
     }
 
     if (request.method === "POST" && url.pathname === "/api/ai/gemini/refine") {
       const body = asRecord(await readJsonBody(request)) || {};
-      return handleRefine(requestId, { ...body, provider: "gemini" }, writerRegistry);
+      return await handleRefine(requestId, { ...body, provider: "gemini" }, writerRegistry);
     }
 
     throw new HttpError(404, "NOT_FOUND", "API route not found.", {
