@@ -82,7 +82,7 @@ export const PROVIDER_CAPABILITY_MATRIX: Record<ProviderId, ProviderCapabilities
 });
 
 export const DEFAULT_PROVIDER_SELECTION: ProviderSelection = Object.freeze({
-  writer: "gemini",
+  writer: "anthropic",
   transcription: "browser",
 });
 
