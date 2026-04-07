@@ -338,7 +338,7 @@ export class AnthropicWriter
 
   constructor(apiKey: string, dependencies: AnthropicWriterDependencies = {}) {
     this.apiKey = apiKey;
-    this.fetchImpl = dependencies.fetchImpl ?? fetch;
+    this.fetchImpl = dependencies.fetchImpl ?? ((input, init) => fetch(input, init));
     this.sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.random = dependencies.random ?? Math.random;
   }
