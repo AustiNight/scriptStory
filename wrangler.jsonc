@@ -1,12 +1,15 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "scriptstory",
+  "name": "scriptstories",
   "main": "server/worker.ts",
   "compatibility_date": "2026-03-09",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "vars": {
-    "ENABLE_OPENAI_WRITER": "true"
+    "ENABLE_OPENAI_WRITER": "false",
+    "ENABLE_ANTHROPIC_WRITER": "true"
   },
   "assets": {
     "binding": "ASSETS",
