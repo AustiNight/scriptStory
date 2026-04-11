@@ -46,10 +46,10 @@ export const DEFAULT_OPENAI_WRITER_RUNTIME_CONFIG: OpenAIWriterRuntimeConfig = O
 
 export const DEFAULT_ANTHROPIC_WRITER_RUNTIME_CONFIG: AnthropicWriterRuntimeConfig =
   Object.freeze({
-    summaryModel: "claude-3-5-haiku-latest",
-    analysisModel: "claude-3-5-sonnet-latest",
-    refineModel: "claude-3-5-haiku-latest",
-    fallbackModel: "claude-3-5-haiku-latest",
+    summaryModel: "claude-haiku-4-5-20251001",
+    analysisModel: "claude-sonnet-4-6",
+    refineModel: "claude-haiku-4-5-20251001",
+    fallbackModel: "claude-haiku-4-5-20251001",
     temperature: 0.2,
     maxOutputTokens: 900,
     requestTimeoutMs: 20_000,
